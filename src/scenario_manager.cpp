@@ -108,6 +108,46 @@ namespace ScenarioManager {
         updateAllScenariosCrc();
         return true;
     }
+    bool readScenarioToRawBytes(uint8_t index, uint8_t *rawBytes) {
+        if (!isValidIndex(index) || rawBytes == nullptr) {
+            return false;
+        }
+
+        ScenarioRecord record;
+        if (!readScenario(index, record)) {
+            return false;
+        }
+
+        const uint8_t *bytes = recordBytes(record);
+        for (uint8_t i = 0; i < SCENARIO_SIZE; i++) {
+            rawBytes[i] = bytes[i];
+        }
+
+        return true;
+    }
+
+    bool writeScenarioFromRawBytes(uint8_t index, const uint8_t *rawBytes) {
+        if (!isValidIndex(index) || rawBytes == nullptr) {
+            return false;
+        }
+
+        ScenarioRecord record;
+        uint8_t *bytes = recordBytes(record);
+        for (uint8_t i = 0; i < SCENARIO_SIZE; i++) {
+            bytes[i] = rawBytes[i];
+        }
+
+        if (!isRecordStructValid(record)) {
+            return false;
+        }
+
+        if (!isRecordCrcValid(record)) {
+            return false;
+        }
+
+        return writeScenario(index, record);
+    }
+
 
     bool disableScenario(uint8_t index) {
         if (!isValidIndex(index)) {

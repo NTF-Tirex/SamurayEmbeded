@@ -54,6 +54,9 @@ namespace ScenarioManager {
 
     bool readScenario(uint8_t index, ScenarioRecord &record);
     bool writeScenario(uint8_t index, ScenarioRecord &record);
+    bool readScenarioToRawBytes(uint8_t index, uint8_t *rawBytes);
+    bool writeScenarioFromRawBytes(uint8_t index, const uint8_t *rawBytes);
+
     bool disableScenario(uint8_t index);
     bool clearScenario(uint8_t index);
     bool clearAllScenarios();

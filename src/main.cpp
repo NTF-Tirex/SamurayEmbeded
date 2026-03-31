@@ -2,11 +2,12 @@
 #include "GyverTimers.h"
 #include <microDS18B20/microDS18B20.h>
 #include <EEPROM.h>
+#include "scenario_manager.h"
 
 /* Определение выводов */
 #define DS18B20_DATA        2   // датчик температуры (1 wire)
-#define ON_OFF_RELAY_1      3   // управление оптореле №1 
-#define ON_OFF_RELAY_2      4   // управление оптореле №2 
+#define ON_OFF_RELAY_1      3   // управление оптореле №1
+#define ON_OFF_RELAY_2      4   // управление оптореле №2
 #define MODE_TURN           5   // контроль тревожного выхода
 #define ONOFF_TURN          6   // контроль датчика холла
 #define PWM_PIN             7   // вывод ШИМ
@@ -19,17 +20,25 @@
 #define ADDR_BIT_1          8   // адрес RS485 Bit1
 #define ADDR_BIT_0          16  // адрес RS485 Bit0
 
-//----------------------------------------------  
+//----------------------------------------------
 // Регистры Modbus
-//----------------------------------------------  
+//----------------------------------------------
 
 // Регистры флагов (Coils)
 #define COIL_MODE_CURRENT       0
 #define COIL_ONOFF              1
+#define COIL_ACTUATOR_0         2
+#define COIL_ACTUATOR_1         3
 
 // Дискретные входы (Discrete Inputs)
-#define INPUT_DISCRETE_MODE         0  
-#define INPUT_DISCRETE_ONOFF_TURN   1 
+#define INPUT_DISCRETE_0        0
+#define INPUT_DISCRETE_1        1
+#define INPUT_DISCRETE_2        2
+#define INPUT_DISCRETE_3        3
+#define INPUT_DISCRETE_4        4
+#define INPUT_DISCRETE_5        5
+#define INPUT_DISCRETE_6        6
+#define INPUT_DISCRETE_7        7
 
 // Состояние устройства (Input Registers)
 #define INPUT_DEVICE_TYPE_ID        0
@@ -41,53 +50,9 @@
 #define INPUT_COUNT_DISCRETE        6
 #define INPUT_COUNT_REGISTERS       7
 #define INPUT_COUNT_HOLD            8
-#define INPUT_MAC_ENABLED           9
-#define INPUT_MAC_BYTE_1            10
-#define INPUT_MAC_BYTE_2            11
-#define INPUT_MAC_BYTE_3            12
-#define INPUT_MAC_BYTE_4            13
-#define INPUT_MAC_BYTE_5            14
-#define INPUT_MAC_BYTE_6            15
-#define INPUT_CALENDAR_ENABLED      16
-#define INPUT_DATE_DAY              17
-#define INPUT_DATE_MONTH            18
-#define INPUT_DATE_YEAR             19
-#define INPUT_TIME_HOUR             20
-#define INPUT_DATE_MINITES          21
-#define INPUT_DATE_SECONDS          22
-#define INPUT_NAME_ENABLED          23  // Флаг наличия имени
-#define INPUT_NAME_BYTE_0           24  // Байты имени (первые 32 символа)
-#define INPUT_NAME_BYTE_1           25
-#define INPUT_NAME_BYTE_2           26
-#define INPUT_NAME_BYTE_3           27
-#define INPUT_NAME_BYTE_4           28
-#define INPUT_NAME_BYTE_5           29
-#define INPUT_NAME_BYTE_6           30
-#define INPUT_NAME_BYTE_7           31
-#define INPUT_NAME_BYTE_8           32
-#define INPUT_NAME_BYTE_9           33
-#define INPUT_NAME_BYTE_10          34
-#define INPUT_NAME_BYTE_11          35
-#define INPUT_NAME_BYTE_12          36
-#define INPUT_NAME_BYTE_13          37
-#define INPUT_NAME_BYTE_14          38
-#define INPUT_NAME_BYTE_15          39
-#define INPUT_NAME_BYTE_16          40
-#define INPUT_NAME_BYTE_17          41
-#define INPUT_NAME_BYTE_18          42
-#define INPUT_NAME_BYTE_19          43
-#define INPUT_NAME_BYTE_20          44
-#define INPUT_NAME_BYTE_21          45
-#define INPUT_NAME_BYTE_22          46
-#define INPUT_NAME_BYTE_23          47
-#define INPUT_NAME_BYTE_24          48
-#define INPUT_NAME_BYTE_25          49
-#define INPUT_NAME_BYTE_26          50
-#define INPUT_NAME_BYTE_27          51
-#define INPUT_NAME_BYTE_28          52
-#define INPUT_NAME_BYTE_29          53
-#define INPUT_NAME_BYTE_30          54
-#define INPUT_NAME_BYTE_31          55
+#define INPUT_COUNT_SENSOR          9
+#define INPUT_COUNT_ACTUATORS       10
+#define INPUT_COUNT_SCENARIOS_ACTIVE  11
 
 // Holding Registers
 #define HOLD_LEVEL_MODE             0
@@ -129,51 +94,78 @@
 #define ACTION_CODE_SET_TIME                2
 #define ACTION_CODE_SET_DATE                3
 #define ACTION_CODE_SET_NAME                4
-#define ACTION_CODE_SET_SLAVE_ID_BY_MAC     5  
+#define ACTION_CODE_SET_SLAVE_ID_BY_MAC     5
+#define ACTION_CODE_SET_SCENARIO            6
+#define ACTION_CODE_GET_SCENARIO            7
+#define ACTION_CODE_GET_MAC                 8
+#define ACTION_CODE_GET_TIME                9
+#define ACTION_CODE_GET_DATE                10
+#define ACTION_CODE_GET_NAME                11
+#define ACTION_CODE_SET_SENSOR_CONFIG       12
+#define ACTION_CODE_GET_SENSOR_CONFIG       13
+#define ACTION_CODE_SET_ACTUATOR_CONFIG     14
+#define ACTION_CODE_GET_ACTUATOR_CONFIG     15
+#define ACTION_CODE_CLEAR_ALL_SCENARIOS    16
 
 // Адреса в EEPROM (только для сохраняемых данных)
-#define EEPROM_ADDRESS_SLAVE_ID         0
-#define EEPROM_ADDRESS_MODE_CURRENT     1
-#define EEPROM_ADDRESS_ONOFF            2 
-#define EEPROM_ADDRESS_LEVEL_MODE       3
-#define EEPROM_ADDRESS_MAC_1            4
-#define EEPROM_ADDRESS_MAC_2            5
-#define EEPROM_ADDRESS_MAC_3            6
-#define EEPROM_ADDRESS_MAC_4            7
-#define EEPROM_ADDRESS_MAC_5            8
-#define EEPROM_ADDRESS_MAC_6            9
-#define EEPROM_ADDRESS_NAME_0           10  // Имя устройства (32 байта)
-#define EEPROM_ADDRESS_NAME_1           11
-#define EEPROM_ADDRESS_NAME_2           12
-#define EEPROM_ADDRESS_NAME_3           13
-#define EEPROM_ADDRESS_NAME_4           14
-#define EEPROM_ADDRESS_NAME_5           15
-#define EEPROM_ADDRESS_NAME_6           16
-#define EEPROM_ADDRESS_NAME_7           17
-#define EEPROM_ADDRESS_NAME_8           18
-#define EEPROM_ADDRESS_NAME_9           19
-#define EEPROM_ADDRESS_NAME_10          20
-#define EEPROM_ADDRESS_NAME_11          21
-#define EEPROM_ADDRESS_NAME_12          22
-#define EEPROM_ADDRESS_NAME_13          23
-#define EEPROM_ADDRESS_NAME_14          24
-#define EEPROM_ADDRESS_NAME_15          25
-#define EEPROM_ADDRESS_NAME_16          26
-#define EEPROM_ADDRESS_NAME_17          27
-#define EEPROM_ADDRESS_NAME_18          28
-#define EEPROM_ADDRESS_NAME_19          29
-#define EEPROM_ADDRESS_NAME_20          30
-#define EEPROM_ADDRESS_NAME_21          31
-#define EEPROM_ADDRESS_NAME_22          32
-#define EEPROM_ADDRESS_NAME_23          33
-#define EEPROM_ADDRESS_NAME_24          34
-#define EEPROM_ADDRESS_NAME_25          35
-#define EEPROM_ADDRESS_NAME_26          36
-#define EEPROM_ADDRESS_NAME_27          37
-#define EEPROM_ADDRESS_NAME_28          38
-#define EEPROM_ADDRESS_NAME_29          39
-#define EEPROM_ADDRESS_NAME_30          40
-#define EEPROM_ADDRESS_NAME_31          41
+#define EEPROM_ADDRESS_SLAVE_ID             0
+#define EEPROM_ADDRESS_MODE_CURRENT         1
+#define EEPROM_ADDRESS_ONOFF                2
+#define EEPROM_ADDRESS_LEVEL_MODE           3
+#define EEPROM_ADDRESS_MAC_1                4
+#define EEPROM_ADDRESS_MAC_2                5
+#define EEPROM_ADDRESS_MAC_3                6
+#define EEPROM_ADDRESS_MAC_4                7
+#define EEPROM_ADDRESS_MAC_5                8
+#define EEPROM_ADDRESS_MAC_6                9
+#define EEPROM_ADDRESS_NAME_0               10
+#define EEPROM_ADDRESS_NAME_1               11
+#define EEPROM_ADDRESS_NAME_2               12
+#define EEPROM_ADDRESS_NAME_3               13
+#define EEPROM_ADDRESS_NAME_4               14
+#define EEPROM_ADDRESS_NAME_5               15
+#define EEPROM_ADDRESS_NAME_6               16
+#define EEPROM_ADDRESS_NAME_7               17
+#define EEPROM_ADDRESS_NAME_8               18
+#define EEPROM_ADDRESS_NAME_9               19
+#define EEPROM_ADDRESS_NAME_10              20
+#define EEPROM_ADDRESS_NAME_11              21
+#define EEPROM_ADDRESS_NAME_12              22
+#define EEPROM_ADDRESS_NAME_13              23
+#define EEPROM_ADDRESS_NAME_14              24
+#define EEPROM_ADDRESS_NAME_15              25
+#define EEPROM_ADDRESS_NAME_16              26
+#define EEPROM_ADDRESS_NAME_17              27
+#define EEPROM_ADDRESS_NAME_18              28
+#define EEPROM_ADDRESS_NAME_19              29
+#define EEPROM_ADDRESS_NAME_20              30
+#define EEPROM_ADDRESS_NAME_21              31
+#define EEPROM_ADDRESS_NAME_22              32
+#define EEPROM_ADDRESS_NAME_23              33
+#define EEPROM_ADDRESS_NAME_24              34
+#define EEPROM_ADDRESS_NAME_25              35
+#define EEPROM_ADDRESS_NAME_26              36
+#define EEPROM_ADDRESS_NAME_27              37
+#define EEPROM_ADDRESS_NAME_28              38
+#define EEPROM_ADDRESS_NAME_29              39
+#define EEPROM_ADDRESS_NAME_30              40
+#define EEPROM_ADDRESS_NAME_31              41
+#define EEPROM_ADDRESS_SENSOR_ID_0          42
+#define EEPROM_ADDRESS_SENSOR_ID_1          43
+#define EEPROM_ADDRESS_SENSOR_ID_2          44
+#define EEPROM_ADDRESS_SENSOR_ID_3          45
+#define EEPROM_ADDRESS_SENSOR_ID_4          46
+#define EEPROM_ADDRESS_SENSOR_ID_5          47
+#define EEPROM_ADDRESS_SENSOR_ID_6          48
+#define EEPROM_ADDRESS_SENSOR_ID_7          49
+#define EEPROM_ADDRESS_ACTUATOR_ID_0        50
+#define EEPROM_ADDRESS_ACTUATOR_ID_1        51
+#define EEPROM_ADDRESS_ACTUATOR_ID_2        52
+#define EEPROM_ADDRESS_ACTUATOR_ID_3        53
+#define EEPROM_ADDRESS_ACTUATOR_ID_4        54
+#define EEPROM_ADDRESS_ACTUATOR_ID_5        55
+#define EEPROM_ADDRESS_ACTUATOR_ID_6        56
+#define EEPROM_ADDRESS_ACTUATOR_ID_7        57
 
 /* Константы ошибок Modbus */
 #define ILLEGAL_FUNCTION    1
@@ -182,9 +174,9 @@
 #define DEVICE_FAILURE      4
 
 /* Modbus функции */
-#define FUNCTION_READ_COILS                 1  
-#define FUNCTION_READ_DISCRETE_INPUTS       2  
-#define FUNCTION_READ_HOLD_REGISTER         3  
+#define FUNCTION_READ_COILS                 1
+#define FUNCTION_READ_DISCRETE_INPUTS       2
+#define FUNCTION_READ_HOLD_REGISTER         3
 #define FUNCTION_READ_INPUT_REGISTERS       4
 #define FUNCTION_WRITE_COIL                 5
 #define FUNCTION_WRITE_REGISTER             6
@@ -193,87 +185,61 @@
 
 /* Настройки */
 #define LEN                         240
-#define DEVICE_TYPE_ID              3       // например, фосфор
-#define FIRMWARE_HIGH               1 
+#define DEVICE_TYPE_ID              3
+#define FIRMWARE_HIGH               1
 #define FIRMWARE_LOW                0
 #define SERIAL_NUMBER               1
 #define SLAVE_ID_DEFAULT            128
-#define MIN_BRIGHTNESS              20      // минимальная яркость (0-100)
-#define ACTION_DATA_SIZE            32      // размер массива данных действий
-#define NAME_SIZE                   32      // размер имени устройства
+#define MIN_BRIGHTNESS              20
+#define ACTION_DATA_SIZE            32
+#define NAME_SIZE                   32
 
 const char base[16] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
 
-const int coilsList[] = { 
-    COIL_MODE_CURRENT, 
-    COIL_ONOFF
+const int coilsList[] = {
+    COIL_MODE_CURRENT,
+    COIL_ONOFF,
+    COIL_ACTUATOR_0,
+    COIL_ACTUATOR_1
 };
 
-const int inputDiscreteList[] = { 
-    INPUT_DISCRETE_MODE, 
-    INPUT_DISCRETE_ONOFF_TURN 
+const uint8_t sensorPins[] = {
+    MODE_TURN,
+    ONOFF_TURN
 };
 
-const int inputStateList[] = {  
-    INPUT_DEVICE_TYPE_ID, 
-    INPUT_SENSOR_TEMPERATURE, 
-    INPUT_SERIAL_NUMBER, 
-    INPUT_FIRMWARE_HIGH, 
+const uint8_t actuatorPins[] = {
+    ON_OFF_RELAY_1,
+    ON_OFF_RELAY_2
+};
+
+const int inputDiscreteList[] = {
+    INPUT_DISCRETE_0,
+    INPUT_DISCRETE_1,
+    INPUT_DISCRETE_2,
+    INPUT_DISCRETE_3,
+    INPUT_DISCRETE_4,
+    INPUT_DISCRETE_5,
+    INPUT_DISCRETE_6,
+    INPUT_DISCRETE_7
+};
+
+const int inputStateList[] = {
+    INPUT_DEVICE_TYPE_ID,
+    INPUT_SENSOR_TEMPERATURE,
+    INPUT_SERIAL_NUMBER,
+    INPUT_FIRMWARE_HIGH,
     INPUT_FIRMWARE_LOW,
     INPUT_COUNT_COILS,
     INPUT_COUNT_DISCRETE,
     INPUT_COUNT_REGISTERS,
     INPUT_COUNT_HOLD,
-    INPUT_MAC_ENABLED,
-    INPUT_MAC_BYTE_1,
-    INPUT_MAC_BYTE_2,
-    INPUT_MAC_BYTE_3,
-    INPUT_MAC_BYTE_4,
-    INPUT_MAC_BYTE_5,
-    INPUT_MAC_BYTE_6,
-    INPUT_CALENDAR_ENABLED,
-    INPUT_DATE_DAY,
-    INPUT_DATE_MONTH,
-    INPUT_DATE_YEAR,
-    INPUT_TIME_HOUR,
-    INPUT_DATE_MINITES,
-    INPUT_DATE_SECONDS,
-    INPUT_NAME_ENABLED,
-    INPUT_NAME_BYTE_0,
-    INPUT_NAME_BYTE_1,
-    INPUT_NAME_BYTE_2,
-    INPUT_NAME_BYTE_3,
-    INPUT_NAME_BYTE_4,
-    INPUT_NAME_BYTE_5,
-    INPUT_NAME_BYTE_6,
-    INPUT_NAME_BYTE_7,
-    INPUT_NAME_BYTE_8,
-    INPUT_NAME_BYTE_9,
-    INPUT_NAME_BYTE_10,
-    INPUT_NAME_BYTE_11,
-    INPUT_NAME_BYTE_12,
-    INPUT_NAME_BYTE_13,
-    INPUT_NAME_BYTE_14,
-    INPUT_NAME_BYTE_15,
-    INPUT_NAME_BYTE_16,
-    INPUT_NAME_BYTE_17,
-    INPUT_NAME_BYTE_18,
-    INPUT_NAME_BYTE_19,
-    INPUT_NAME_BYTE_20,
-    INPUT_NAME_BYTE_21,
-    INPUT_NAME_BYTE_22,
-    INPUT_NAME_BYTE_23,
-    INPUT_NAME_BYTE_24,
-    INPUT_NAME_BYTE_25,
-    INPUT_NAME_BYTE_26,
-    INPUT_NAME_BYTE_27,
-    INPUT_NAME_BYTE_28,
-    INPUT_NAME_BYTE_29,
-    INPUT_NAME_BYTE_30,
-    INPUT_NAME_BYTE_31
+    INPUT_COUNT_SENSOR,
+    INPUT_COUNT_ACTUATORS,
+    INPUT_COUNT_SCENARIOS_ACTIVE
 };
 
-const int holdRegisterList[] = {  
+const int holdRegisterList[] = {
     HOLD_LEVEL_MODE,
     HOLD_ACTION_CODE,
     HOLD_ACTION_DATA_0,
@@ -310,9 +276,9 @@ const int holdRegisterList[] = {
     HOLD_ACTION_DATA_31
 };
 
-const int eepromAddressList[] = { 
+const int eepromAddressList[] = {
     EEPROM_ADDRESS_SLAVE_ID,
-    EEPROM_ADDRESS_MODE_CURRENT, 
+    EEPROM_ADDRESS_MODE_CURRENT,
     EEPROM_ADDRESS_ONOFF,
     EEPROM_ADDRESS_LEVEL_MODE,
     EEPROM_ADDRESS_MAC_1,
@@ -352,7 +318,23 @@ const int eepromAddressList[] = {
     EEPROM_ADDRESS_NAME_28,
     EEPROM_ADDRESS_NAME_29,
     EEPROM_ADDRESS_NAME_30,
-    EEPROM_ADDRESS_NAME_31
+    EEPROM_ADDRESS_NAME_31,
+    EEPROM_ADDRESS_SENSOR_ID_0,
+    EEPROM_ADDRESS_SENSOR_ID_1,
+    EEPROM_ADDRESS_SENSOR_ID_2,
+    EEPROM_ADDRESS_SENSOR_ID_3,
+    EEPROM_ADDRESS_SENSOR_ID_4,
+    EEPROM_ADDRESS_SENSOR_ID_5,
+    EEPROM_ADDRESS_SENSOR_ID_6,
+    EEPROM_ADDRESS_SENSOR_ID_7,
+    EEPROM_ADDRESS_ACTUATOR_ID_0,
+    EEPROM_ADDRESS_ACTUATOR_ID_1,
+    EEPROM_ADDRESS_ACTUATOR_ID_2,
+    EEPROM_ADDRESS_ACTUATOR_ID_3,
+    EEPROM_ADDRESS_ACTUATOR_ID_4,
+    EEPROM_ADDRESS_ACTUATOR_ID_5,
+    EEPROM_ADDRESS_ACTUATOR_ID_6,
+    EEPROM_ADDRESS_ACTUATOR_ID_7
 };
 
 /* Глобальные переменные */
@@ -362,20 +344,17 @@ char RX = 0;
 int count_rx = 0;
 char flag_rx = 0;
 
-// Массив для данных действий (вместо EEPROM)
 byte actionData[ACTION_DATA_SIZE] = {0};
+volatile bool actionPending = false;
+uint16_t pendingActionCode = 0;
 
-// Переменные для даты
 byte currentDay = 0;
 byte currentMonth = 0;
 byte currentYear = 0;
-
-// Переменные для времени
 byte currentHour = 0;
 byte currentMinute = 0;
 byte currentSecond = 0;
 
-/* ШИМ */
 int duty = 0;
 bool lightEnabled = false;
 bool lightBrightness = false;
@@ -384,13 +363,30 @@ bool isExternalControl = false;
 int countWithoutExternalControl = 0;
 const int timeoutExternalControl = 10;
 
-/* Датчик температуры */
+uint8_t sensorIds[sizeof(sensorPins) / sizeof(sensorPins[0])] = {0};
+uint8_t actuatorIds[sizeof(actuatorPins) / sizeof(actuatorPins[0])] = {0};
+uint8_t sensorStates[sizeof(sensorPins) / sizeof(sensorPins[0])] = {0};
+uint8_t prevSensorStates[sizeof(sensorPins) / sizeof(sensorPins[0])] = {0};
+uint8_t actuatorStates[sizeof(actuatorPins) / sizeof(actuatorPins[0])] = {0};
+bool actuatorCoilForceOn[sizeof(actuatorPins) / sizeof(actuatorPins[0])] = {false};
+uint8_t scenarioBlinkMode = 0;
+uint8_t scenarioBlinkTime = 0;
+
 MicroDS18B20<DS18B20_DATA> sensor;
 
 /* Прототипы функций */
 void getAddress();
 void setupEEPROM();
 void clearEEPROM();
+void loadIoConfigFromEEPROM();
+void updateConfiguredIoStates();
+void applyConfiguredActuatorStates();
+void processScenarioTriggers();
+void executeLocalScenario(const ScenarioRecord &record);
+uint8_t readConfiguredSensorState(uint8_t index);
+bool isSensorConfigured(uint8_t index);
+bool isActuatorConfigured(uint8_t index);
+void clearActionData();
 
 void readPacketFromPort();
 void sendPacketToPort(int *data, int len);
@@ -440,19 +436,23 @@ void setup() {
     pinMode(ONOFF_TURN, INPUT);
     pinMode(PWM_PIN, OUTPUT);
 
-    pinMode(ADDR_BIT_6, INPUT);  
-    pinMode(ADDR_BIT_5, INPUT); 
-    pinMode(ADDR_BIT_4, INPUT); 
-    pinMode(ADDR_BIT_3, INPUT); 
-    pinMode(ADDR_BIT_2, INPUT); 
-    pinMode(ADDR_BIT_1, INPUT); 
-    pinMode(ADDR_BIT_0, INPUT);  
+    pinMode(ADDR_BIT_6, INPUT);
+    pinMode(ADDR_BIT_5, INPUT);
+    pinMode(ADDR_BIT_4, INPUT);
+    pinMode(ADDR_BIT_3, INPUT);
+    pinMode(ADDR_BIT_2, INPUT);
+    pinMode(ADDR_BIT_1, INPUT);
+    pinMode(ADDR_BIT_0, INPUT);
 
-    Timer2.setFrequency(10000UL);   // 10 кГц для ШИМ
+    Timer2.setFrequency(10000UL);
     Timer2.enableISR();
 
     getAddress();
     setupEEPROM();
+    ScenarioManager::begin();
+    loadIoConfigFromEEPROM();
+    updateConfiguredIoStates();
+    applyConfiguredActuatorStates();
 }
 
 void loop() {
@@ -465,20 +465,27 @@ void loop() {
         extOnOffState = EEPROM.read(EEPROM_ADDRESS_ONOFF);
         level = EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE);
     } else {
-        extModeState = digitalRead(MODE_TURN); 
-        extOnOffState = digitalRead(ONOFF_TURN); 
+        extModeState = digitalRead(MODE_TURN);
+        extOnOffState = digitalRead(ONOFF_TURN);
     }
-   digitalWrite(ON_OFF_RELAY_1, extModeState);
-//         digitalWrite(ON_OFF_RELAY_2, extModeState);
+
     if (extModeState == 0) {
         setBright(100);
     } else {
         setBright(level);
     }
-
     lightEnabled = (extOnOffState == 1);
-    
+
     readPacketFromPort();
+
+    if (actionPending) {
+        actionPending = false;
+        handleActionCode(pendingActionCode);
+    }
+
+    updateConfiguredIoStates();
+    processScenarioTriggers();
+    applyConfiguredActuatorStates();
 }
 
 // =====================================================
@@ -729,14 +736,14 @@ void functionWriteSingleCoil(int *data) {
     writeAndSetCoil(coilIndex, coilValue);
 
     // Эхо ответа
-    int answer[5];
-    for (int i = 0; i < 3; i++) {
+    int answer[7];
+    for (int i = 0; i < 6; i++) {
         answer[i] = data[i];
     }
-    int lrc = lrc8(answer, 4);
-    answer[4] = lrc;
+    int lrc = lrc8(answer, 6);
+    answer[6] = lrc;
 
-    sendPacketToPort(answer, 5);
+    sendPacketToPort(answer, 7);
 }
 
 void functionWriteCoils(int *data) {
@@ -889,14 +896,16 @@ void getAddress() {
 }
 
 void setupEEPROM() {
-    // Инициализация coils
     int coilLen = sizeof(coilsList) / sizeof(coilsList[0]);
     for (int i = 0; i < coilLen; i++) {
-        byte value = EEPROM.read(eepromAddressList[i]);
+        byte value = readCoilFromEEPROM(i);
         writeAndSetCoil(i, value);
     }
-    
-    // Инициализация массива actionData нулями
+
+    for (uint8_t i = 0; i < (sizeof(actuatorPins) / sizeof(actuatorPins[0])); i++) {
+        actuatorCoilForceOn[i] = false;
+    }
+
     for (int i = 0; i < ACTION_DATA_SIZE; i++) {
         actionData[i] = 0;
     }
@@ -909,6 +918,147 @@ void clearEEPROM() {
     }
 }
 
+void clearActionData() {
+    for (int i = 0; i < ACTION_DATA_SIZE; i++) {
+        actionData[i] = 0;
+    }
+}
+
+void loadIoConfigFromEEPROM() {
+    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
+    const uint8_t actuatorCount = sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+
+    for (uint8_t i = 0; i < sensorCount; i++) {
+        sensorIds[i] = EEPROM.read(EEPROM_ADDRESS_SENSOR_ID_0 + i);
+    }
+    for (uint8_t i = 0; i < actuatorCount; i++) {
+        actuatorIds[i] = EEPROM.read(EEPROM_ADDRESS_ACTUATOR_ID_0 + i);
+        actuatorStates[i] = 0;
+    }
+}
+
+bool isSensorConfigured(uint8_t index) {
+    return index < (sizeof(sensorPins) / sizeof(sensorPins[0])) && sensorIds[index] != 0;
+}
+
+bool isActuatorConfigured(uint8_t index) {
+    return index < (sizeof(actuatorPins) / sizeof(actuatorPins[0])) && actuatorIds[index] != 0;
+}
+
+uint8_t readConfiguredSensorState(uint8_t index) {
+    if (index >= (sizeof(sensorPins) / sizeof(sensorPins[0]))) {
+        return 0;
+    }
+
+    uint8_t pin = sensorPins[index];
+    if (pin == MODE_TURN) {
+        return !digitalRead(pin);
+    }
+    return digitalRead(pin);
+}
+
+void updateConfiguredIoStates() {
+    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
+    const uint8_t actuatorCount = sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+
+    for (uint8_t i = 0; i < sensorCount; i++) {
+        prevSensorStates[i] = sensorStates[i];
+        sensorStates[i] = isSensorConfigured(i) ? readConfiguredSensorState(i) : 0;
+    }
+
+    for (uint8_t i = 0; i < actuatorCount; i++) {
+        if (!isActuatorConfigured(i) && !actuatorCoilForceOn[i]) {
+            actuatorStates[i] = 0;
+        }
+    }
+}
+
+void applyConfiguredActuatorStates() {
+    const uint8_t actuatorCount = sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+    for (uint8_t i = 0; i < actuatorCount; i++) {
+        if (actuatorCoilForceOn[i]) {
+            digitalWrite(actuatorPins[i], HIGH);
+        } else if (isActuatorConfigured(i)) {
+            digitalWrite(actuatorPins[i], actuatorStates[i] ? HIGH : LOW);
+        } else {
+            digitalWrite(actuatorPins[i], LOW);
+        }
+    }
+}
+
+void executeLocalScenario(const ScenarioRecord &record) {
+    uint8_t reactionType = ScenarioManager::getReactionType(record.reactionByte);
+    uint8_t actuatorIndex = ScenarioManager::getActuatorIndex(record.reactionByte);
+
+    switch (reactionType) {
+        case SCENARIO_REACTION_OUT:
+            if (actuatorIndex < (sizeof(actuatorPins) / sizeof(actuatorPins[0])) && isActuatorConfigured(actuatorIndex)) {
+                actuatorStates[actuatorIndex] = (record.reactionValue != 0) ? 1 : 0;
+            }
+            break;
+
+        case SCENARIO_REACTION_LUM:
+            setBright(record.reactionValue);
+            break;
+
+        case SCENARIO_REACTION_MODE:
+            scenarioBlinkMode = record.reactionValue;
+            break;
+
+        case SCENARIO_REACTION_TIME:
+            scenarioBlinkTime = record.reactionValue;
+            break;
+
+        default:
+            break;
+    }
+}
+
+void processScenarioTriggers() {
+    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
+    uint8_t scenarioCount = ScenarioManager::getScenarioCount();
+
+    for (uint8_t sensorIndex = 0; sensorIndex < sensorCount; sensorIndex++) {
+        if (!isSensorConfigured(sensorIndex)) {
+            continue;
+        }
+
+        if (sensorStates[sensorIndex] == prevSensorStates[sensorIndex]) {
+            continue;
+        }
+
+        for (uint8_t scenarioIndex = 0; scenarioIndex < scenarioCount; scenarioIndex++) {
+            ScenarioRecord record;
+            if (!ScenarioManager::readScenario(scenarioIndex, record)) {
+                continue;
+            }
+            if (!ScenarioManager::isSlotActive(record)) {
+                continue;
+            }
+            if (!ScenarioManager::isRecordStructValid(record)) {
+                continue;
+            }
+            if (!ScenarioManager::isRecordCrcValid(record)) {
+                continue;
+            }
+            if (record.sourceAddress != addr) {
+                continue;
+            }
+            if (ScenarioManager::getSensorIndex(record.triggerByte) != sensorIndex) {
+                continue;
+            }
+            if (ScenarioManager::getTriggerValue(record.triggerByte) != sensorStates[sensorIndex]) {
+                continue;
+            }
+            if (!ScenarioManager::hasTargetAddress(record, addr)) {
+                continue;
+            }
+
+            executeLocalScenario(record);
+        }
+    }
+}
+
 // =====================================================
 // Чтение значений
 // =====================================================
@@ -917,6 +1067,8 @@ byte readCoilFromEEPROM(int index) {
     switch (coilsList[index]) {
         case COIL_MODE_CURRENT:     return EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT);
         case COIL_ONOFF:            return EEPROM.read(EEPROM_ADDRESS_ONOFF);
+        case COIL_ACTUATOR_0:       return actuatorCoilForceOn[0] ? 1 : 0;
+        case COIL_ACTUATOR_1:       return (sizeof(actuatorPins) / sizeof(actuatorPins[0]) > 1 && actuatorCoilForceOn[1]) ? 1 : 0;
         default:                    return 0;
     }
 }
@@ -962,106 +1114,110 @@ int readHoldRegisterFromEEPROM(int index) {
 }
 
 byte readDiscreteInput(int index) {
-    switch (inputDiscreteList[index]) {
-        case INPUT_DISCRETE_MODE:           return !digitalRead(MODE_TURN);
-        case INPUT_DISCRETE_ONOFF_TURN:     return digitalRead(ONOFF_TURN);
-        default:                            return 0;
+    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
+    const uint8_t actuatorCount = sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+
+    const uint8_t connectedSensorsStart = 0;
+    const uint8_t connectedActuatorsStart = connectedSensorsStart + sensorCount;
+    const uint8_t sensorStatesStart = connectedActuatorsStart + actuatorCount;
+    const uint8_t actuatorStatesStart = sensorStatesStart + sensorCount;
+    const uint8_t totalLogicalDiscreteCount = actuatorStatesStart + actuatorCount;
+
+    if (index < 0 || index >= totalLogicalDiscreteCount) {
+        return 0;
     }
+
+    // 0 .. sensorCount-1
+    // Признаки: датчик подключен / не подключен
+    if (index < connectedActuatorsStart) {
+        uint8_t sensorIndex = index - connectedSensorsStart;
+        return isSensorConfigured(sensorIndex) ? 1 : 0;
+    }
+
+    // sensorCount .. sensorCount+actuatorCount-1
+    // Признаки: исполнительное устройство подключено / не подключено
+    if (index < sensorStatesStart) {
+        uint8_t actuatorIndex = index - connectedActuatorsStart;
+        return isActuatorConfigured(actuatorIndex) ? 1 : 0;
+    }
+
+    // Далее sensorCount значений
+    // Состояния датчиков, но если датчик не подключен -> 0
+    if (index < actuatorStatesStart) {
+        uint8_t sensorIndex = index - sensorStatesStart;
+        return isSensorConfigured(sensorIndex) ? sensorStates[sensorIndex] : 0;
+    }
+
+    // Далее actuatorCount значений
+    // Состояния исполнительных устройств, но если устройство не подключено -> 0
+    uint8_t actuatorIndex = index - actuatorStatesStart;
+    if (actuatorCoilForceOn[actuatorIndex]) {
+        return 1;
+    }
+    return isActuatorConfigured(actuatorIndex) ? actuatorStates[actuatorIndex] : 0;
 }
 
 int readInputState(int index) {
     switch (inputStateList[index]) {
-        case INPUT_DEVICE_TYPE_ID:      return DEVICE_TYPE_ID;
-        case INPUT_SENSOR_TEMPERATURE:  
+        case INPUT_DEVICE_TYPE_ID:
+            return DEVICE_TYPE_ID;
+
+        case INPUT_SENSOR_TEMPERATURE:
             sensor.requestTemp();
             return (int)sensor.getTemp();
-        case INPUT_SERIAL_NUMBER:       return SERIAL_NUMBER;
-        case INPUT_FIRMWARE_HIGH:       return FIRMWARE_HIGH;
-        case INPUT_FIRMWARE_LOW:        return FIRMWARE_LOW;
-        
-        // Размеры массивов
-        case INPUT_COUNT_COILS:         return sizeof(coilsList) / sizeof(coilsList[0]);
-        case INPUT_COUNT_DISCRETE:      return sizeof(inputDiscreteList) / sizeof(inputDiscreteList[0]);
-        case INPUT_COUNT_REGISTERS:     return sizeof(inputStateList) / sizeof(inputStateList[0]);
-        case INPUT_COUNT_HOLD:          return sizeof(holdRegisterList) / sizeof(holdRegisterList[0]);
-        
-        // MAC адрес
-        case INPUT_MAC_ENABLED:         
-            // Проверяем, установлен ли MAC-адрес (не все байты равны 0)
-            return (EEPROM.read(EEPROM_ADDRESS_MAC_1) != 0 || 
-                    EEPROM.read(EEPROM_ADDRESS_MAC_2) != 0 || 
-                    EEPROM.read(EEPROM_ADDRESS_MAC_3) != 0 || 
-                    EEPROM.read(EEPROM_ADDRESS_MAC_4) != 0 || 
-                    EEPROM.read(EEPROM_ADDRESS_MAC_5) != 0 || 
-                    EEPROM.read(EEPROM_ADDRESS_MAC_6) != 0) ? 1 : 0;
-            
-        case INPUT_MAC_BYTE_1:          return EEPROM.read(EEPROM_ADDRESS_MAC_1);
-        case INPUT_MAC_BYTE_2:          return EEPROM.read(EEPROM_ADDRESS_MAC_2);
-        case INPUT_MAC_BYTE_3:          return EEPROM.read(EEPROM_ADDRESS_MAC_3);
-        case INPUT_MAC_BYTE_4:          return EEPROM.read(EEPROM_ADDRESS_MAC_4);
-        case INPUT_MAC_BYTE_5:          return EEPROM.read(EEPROM_ADDRESS_MAC_5);
-        case INPUT_MAC_BYTE_6:          return EEPROM.read(EEPROM_ADDRESS_MAC_6);
-        
-        // Календарь
-        case INPUT_CALENDAR_ENABLED:    
-            // Проверяем, установлена ли дата (не все поля равны 0)
-            return (currentDay != 0 || currentMonth != 0 || currentYear != 0 || 
-                    currentHour != 0 || currentMinute != 0 || currentSecond != 0) ? 1 : 0;
-        
-        // Дата
-        case INPUT_DATE_DAY:            return currentDay;
-        case INPUT_DATE_MONTH:          return currentMonth;
-        case INPUT_DATE_YEAR:           return currentYear;
-        
-        // Время
-        case INPUT_TIME_HOUR:           return currentHour;
-        case INPUT_DATE_MINITES:        return currentMinute;
-        case INPUT_DATE_SECONDS:        return currentSecond;
-        
-        // Имя устройства
-        case INPUT_NAME_ENABLED:
-            // Проверяем, установлено ли имя (не все байты равны 0)
-            for (int i = 0; i < NAME_SIZE; i++) {
-                if (EEPROM.read(EEPROM_ADDRESS_NAME_0 + i) != 0) {
-                    return 1;
+
+        case INPUT_SERIAL_NUMBER:
+            return SERIAL_NUMBER;
+
+        case INPUT_FIRMWARE_HIGH:
+            return FIRMWARE_HIGH;
+
+        case INPUT_FIRMWARE_LOW:
+            return FIRMWARE_LOW;
+
+        case INPUT_COUNT_COILS:
+            return sizeof(coilsList) / sizeof(coilsList[0]);
+
+        case INPUT_COUNT_DISCRETE:
+            return sizeof(inputDiscreteList) / sizeof(inputDiscreteList[0]);
+
+        case INPUT_COUNT_REGISTERS:
+            return sizeof(inputStateList) / sizeof(inputStateList[0]);
+
+        case INPUT_COUNT_HOLD:
+            return sizeof(holdRegisterList) / sizeof(holdRegisterList[0]);
+
+        case INPUT_COUNT_SENSOR:
+            return sizeof(sensorPins) / sizeof(sensorPins[0]);
+
+        case INPUT_COUNT_ACTUATORS:
+            return sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+
+        case INPUT_COUNT_SCENARIOS_ACTIVE:
+            {
+                uint8_t totalCount = ScenarioManager::getScenarioCount();
+                uint8_t activeCount = 0;
+                for (uint8_t i = 0; i < totalCount; i++) {
+                    ScenarioRecord record;
+                    if (!ScenarioManager::readScenario(i, record)) {
+                        continue;
+                    }
+                    if (!ScenarioManager::isSlotActive(record)) {
+                        continue;
+                    }
+                    if (!ScenarioManager::isRecordStructValid(record)) {
+                        continue;
+                    }
+                    if (!ScenarioManager::isRecordCrcValid(record)) {
+                        continue;
+                    }
+                    activeCount++;
                 }
+                return activeCount;
             }
+
+        default:
             return 0;
-            
-        case INPUT_NAME_BYTE_0:  return EEPROM.read(EEPROM_ADDRESS_NAME_0);
-        case INPUT_NAME_BYTE_1:  return EEPROM.read(EEPROM_ADDRESS_NAME_1);
-        case INPUT_NAME_BYTE_2:  return EEPROM.read(EEPROM_ADDRESS_NAME_2);
-        case INPUT_NAME_BYTE_3:  return EEPROM.read(EEPROM_ADDRESS_NAME_3);
-        case INPUT_NAME_BYTE_4:  return EEPROM.read(EEPROM_ADDRESS_NAME_4);
-        case INPUT_NAME_BYTE_5:  return EEPROM.read(EEPROM_ADDRESS_NAME_5);
-        case INPUT_NAME_BYTE_6:  return EEPROM.read(EEPROM_ADDRESS_NAME_6);
-        case INPUT_NAME_BYTE_7:  return EEPROM.read(EEPROM_ADDRESS_NAME_7);
-        case INPUT_NAME_BYTE_8:  return EEPROM.read(EEPROM_ADDRESS_NAME_8);
-        case INPUT_NAME_BYTE_9:  return EEPROM.read(EEPROM_ADDRESS_NAME_9);
-        case INPUT_NAME_BYTE_10: return EEPROM.read(EEPROM_ADDRESS_NAME_10);
-        case INPUT_NAME_BYTE_11: return EEPROM.read(EEPROM_ADDRESS_NAME_11);
-        case INPUT_NAME_BYTE_12: return EEPROM.read(EEPROM_ADDRESS_NAME_12);
-        case INPUT_NAME_BYTE_13: return EEPROM.read(EEPROM_ADDRESS_NAME_13);
-        case INPUT_NAME_BYTE_14: return EEPROM.read(EEPROM_ADDRESS_NAME_14);
-        case INPUT_NAME_BYTE_15: return EEPROM.read(EEPROM_ADDRESS_NAME_15);
-        case INPUT_NAME_BYTE_16: return EEPROM.read(EEPROM_ADDRESS_NAME_16);
-        case INPUT_NAME_BYTE_17: return EEPROM.read(EEPROM_ADDRESS_NAME_17);
-        case INPUT_NAME_BYTE_18: return EEPROM.read(EEPROM_ADDRESS_NAME_18);
-        case INPUT_NAME_BYTE_19: return EEPROM.read(EEPROM_ADDRESS_NAME_19);
-        case INPUT_NAME_BYTE_20: return EEPROM.read(EEPROM_ADDRESS_NAME_20);
-        case INPUT_NAME_BYTE_21: return EEPROM.read(EEPROM_ADDRESS_NAME_21);
-        case INPUT_NAME_BYTE_22: return EEPROM.read(EEPROM_ADDRESS_NAME_22);
-        case INPUT_NAME_BYTE_23: return EEPROM.read(EEPROM_ADDRESS_NAME_23);
-        case INPUT_NAME_BYTE_24: return EEPROM.read(EEPROM_ADDRESS_NAME_24);
-        case INPUT_NAME_BYTE_25: return EEPROM.read(EEPROM_ADDRESS_NAME_25);
-        case INPUT_NAME_BYTE_26: return EEPROM.read(EEPROM_ADDRESS_NAME_26);
-        case INPUT_NAME_BYTE_27: return EEPROM.read(EEPROM_ADDRESS_NAME_27);
-        case INPUT_NAME_BYTE_28: return EEPROM.read(EEPROM_ADDRESS_NAME_28);
-        case INPUT_NAME_BYTE_29: return EEPROM.read(EEPROM_ADDRESS_NAME_29);
-        case INPUT_NAME_BYTE_30: return EEPROM.read(EEPROM_ADDRESS_NAME_30);
-        case INPUT_NAME_BYTE_31: return EEPROM.read(EEPROM_ADDRESS_NAME_31);
-        
-        default:                        return 0;
     }
 }
 
@@ -1074,9 +1230,25 @@ void writeAndSetCoil(int index, byte value) {
         case COIL_MODE_CURRENT:
             EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, value);
             break;
-            
+
         case COIL_ONOFF:
             EEPROM.write(EEPROM_ADDRESS_ONOFF, value);
+            break;
+
+        case COIL_ACTUATOR_0:
+            actuatorCoilForceOn[0] = (value != 0);
+            if (value) {
+                actuatorStates[0] = 1;
+            }
+            break;
+
+        case COIL_ACTUATOR_1:
+            if ((sizeof(actuatorPins) / sizeof(actuatorPins[0])) > 1) {
+                actuatorCoilForceOn[1] = (value != 0);
+                if (value) {
+                    actuatorStates[1] = 1;
+                }
+            }
             break;
     }
 }
@@ -1087,103 +1259,104 @@ void writeHoldRegister(int index, int value) {
             EEPROM.write(EEPROM_ADDRESS_LEVEL_MODE, value);
             break;
         case HOLD_ACTION_CODE:
-            handleActionCode(value);
+            pendingActionCode = (uint16_t)value;
+            actionPending = true;
             break;
         case HOLD_ACTION_DATA_0:
-            actionData[0] = value;
+            actionData[0] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_1:
-            actionData[1] = value;
+            actionData[1] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_2:
-            actionData[2] = value;
+            actionData[2] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_3:
-            actionData[3] = value;
+            actionData[3] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_4:
-            actionData[4] = value;
+            actionData[4] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_5:
-            actionData[5] = value;
+            actionData[5] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_6:
-            actionData[6] = value;
+            actionData[6] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_7:
-            actionData[7] = value;
+            actionData[7] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_8:
-            actionData[8] = value;
+            actionData[8] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_9:
-            actionData[9] = value;
+            actionData[9] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_10:
-            actionData[10] = value;
+            actionData[10] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_11:
-            actionData[11] = value;
+            actionData[11] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_12:
-            actionData[12] = value;
+            actionData[12] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_13:
-            actionData[13] = value;
+            actionData[13] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_14:
-            actionData[14] = value;
+            actionData[14] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_15:
-            actionData[15] = value;
+            actionData[15] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_16:
-            actionData[16] = value;
+            actionData[16] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_17:
-            actionData[17] = value;
+            actionData[17] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_18:
-            actionData[18] = value;
+            actionData[18] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_19:
-            actionData[19] = value;
+            actionData[19] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_20:
-            actionData[20] = value;
+            actionData[20] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_21:
-            actionData[21] = value;
+            actionData[21] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_22:
-            actionData[22] = value;
+            actionData[22] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_23:
-            actionData[23] = value;
+            actionData[23] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_24:
-            actionData[24] = value;
+            actionData[24] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_25:
-            actionData[25] = value;
+            actionData[25] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_26:
-            actionData[26] = value;
+            actionData[26] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_27:
-            actionData[27] = value;
+            actionData[27] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_28:
-            actionData[28] = value;
+            actionData[28] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_29:
-            actionData[29] = value;
+            actionData[29] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_30:
-            actionData[30] = value;
+            actionData[30] = (uint8_t)(value & 0xFF);
             break;
         case HOLD_ACTION_DATA_31:
-            actionData[31] = value;
+            actionData[31] = (uint8_t)(value & 0xFF);
             break;
     }
 }
@@ -1191,7 +1364,6 @@ void writeHoldRegister(int index, int value) {
 void handleActionCode(int actionCode) {
     switch (actionCode) {
         case ACTION_CODE_SET_MAC:
-            // Чтение MAC-адреса из actionData (6 байт)
             EEPROM.write(EEPROM_ADDRESS_MAC_1, actionData[0]);
             EEPROM.write(EEPROM_ADDRESS_MAC_2, actionData[1]);
             EEPROM.write(EEPROM_ADDRESS_MAC_3, actionData[2]);
@@ -1199,10 +1371,9 @@ void handleActionCode(int actionCode) {
             EEPROM.write(EEPROM_ADDRESS_MAC_5, actionData[4]);
             EEPROM.write(EEPROM_ADDRESS_MAC_6, actionData[5]);
             break;
-            
+
         case ACTION_CODE_SET_SLAVE_ID_BY_MAC:
             {
-                // Получаем MAC-адрес из actionData (6 байт)
                 byte targetMAC[6];
                 targetMAC[0] = actionData[0];
                 targetMAC[1] = actionData[1];
@@ -1210,49 +1381,122 @@ void handleActionCode(int actionCode) {
                 targetMAC[3] = actionData[3];
                 targetMAC[4] = actionData[4];
                 targetMAC[5] = actionData[5];
-                
-                // Получаем новый Slave ID из actionData[6]
                 byte newSlaveId = actionData[6];
-                
-                // Сравниваем с собственным MAC-адресом
+
                 if (targetMAC[0] == EEPROM.read(EEPROM_ADDRESS_MAC_1) &&
                     targetMAC[1] == EEPROM.read(EEPROM_ADDRESS_MAC_2) &&
                     targetMAC[2] == EEPROM.read(EEPROM_ADDRESS_MAC_3) &&
                     targetMAC[3] == EEPROM.read(EEPROM_ADDRESS_MAC_4) &&
                     targetMAC[4] == EEPROM.read(EEPROM_ADDRESS_MAC_5) &&
                     targetMAC[5] == EEPROM.read(EEPROM_ADDRESS_MAC_6)) {
-                    
-                    // Это наш MAC-адрес - устанавливаем новый Slave ID
                     if (newSlaveId >= 1 && newSlaveId <= 247) {
                         EEPROM.write(EEPROM_ADDRESS_SLAVE_ID, newSlaveId);
                         addr = newSlaveId;
                     }
                 }
-                // Если MAC не совпадает - ничего не делаем
             }
             break;
-            
+
         case ACTION_CODE_SET_TIME:
-            // Установка времени (данные в actionData[0], actionData[1], actionData[2])
             currentHour = actionData[0];
             currentMinute = actionData[1];
             currentSecond = actionData[2];
             break;
-            
+
         case ACTION_CODE_SET_DATE:
-            // Установка даты (данные в actionData[0], actionData[1], actionData[2])
             currentDay = actionData[0];
             currentMonth = actionData[1];
             currentYear = actionData[2];
             break;
-            
+
         case ACTION_CODE_SET_NAME:
-            // Сохранение имени из actionData (32 байта)
             for (int i = 0; i < NAME_SIZE; i++) {
                 EEPROM.write(EEPROM_ADDRESS_NAME_0 + i, actionData[i]);
             }
             break;
-            
+
+        case ACTION_CODE_SET_SCENARIO:
+            ScenarioManager::writeScenarioFromRawBytes(actionData[0], &actionData[1]);
+            break;
+
+        case ACTION_CODE_GET_SCENARIO:
+            {
+                uint8_t scenarioIndex = actionData[0];
+                if (ScenarioManager::readScenarioToRawBytes(scenarioIndex, &actionData[1])) {
+                    actionData[0] = scenarioIndex;
+                }
+            }
+            break;
+
+        case ACTION_CODE_GET_MAC:
+            clearActionData();
+            actionData[0] = EEPROM.read(EEPROM_ADDRESS_MAC_1);
+            actionData[1] = EEPROM.read(EEPROM_ADDRESS_MAC_2);
+            actionData[2] = EEPROM.read(EEPROM_ADDRESS_MAC_3);
+            actionData[3] = EEPROM.read(EEPROM_ADDRESS_MAC_4);
+            actionData[4] = EEPROM.read(EEPROM_ADDRESS_MAC_5);
+            actionData[5] = EEPROM.read(EEPROM_ADDRESS_MAC_6);
+            break;
+
+        case ACTION_CODE_GET_TIME:
+            clearActionData();
+            actionData[0] = currentHour;
+            actionData[1] = currentMinute;
+            actionData[2] = currentSecond;
+            break;
+
+        case ACTION_CODE_GET_DATE:
+            clearActionData();
+            actionData[0] = currentDay;
+            actionData[1] = currentMonth;
+            actionData[2] = currentYear;
+            break;
+
+        case ACTION_CODE_GET_NAME:
+            clearActionData();
+            for (int i = 0; i < NAME_SIZE; i++) {
+                actionData[i] = EEPROM.read(EEPROM_ADDRESS_NAME_0 + i);
+            }
+            break;
+
+        case ACTION_CODE_SET_SENSOR_CONFIG:
+            for (uint8_t i = 0; i < (sizeof(sensorPins) / sizeof(sensorPins[0])); i++) {
+                sensorIds[i] = actionData[i];
+                EEPROM.write(EEPROM_ADDRESS_SENSOR_ID_0 + i, sensorIds[i]);
+            }
+            updateConfiguredIoStates();
+            break;
+
+        case ACTION_CODE_GET_SENSOR_CONFIG:
+            clearActionData();
+            for (uint8_t i = 0; i < (sizeof(sensorPins) / sizeof(sensorPins[0])); i++) {
+                actionData[i] = sensorIds[i];
+            }
+            break;
+
+        case ACTION_CODE_SET_ACTUATOR_CONFIG:
+            for (uint8_t i = 0; i < (sizeof(actuatorPins) / sizeof(actuatorPins[0])); i++) {
+                actuatorIds[i] = actionData[i];
+                EEPROM.write(EEPROM_ADDRESS_ACTUATOR_ID_0 + i, actuatorIds[i]);
+                if (!isActuatorConfigured(i) && !actuatorCoilForceOn[i]) {
+                    actuatorStates[i] = 0;
+                    digitalWrite(actuatorPins[i], LOW);
+                }
+            }
+            applyConfiguredActuatorStates();
+            break;
+
+        case ACTION_CODE_GET_ACTUATOR_CONFIG:
+            clearActionData();
+            for (uint8_t i = 0; i < (sizeof(actuatorPins) / sizeof(actuatorPins[0])); i++) {
+                actionData[i] = actuatorIds[i];
+            }
+            break;
+
+        case ACTION_CODE_CLEAR_ALL_SCENARIOS:
+            ScenarioManager::clearAllScenarios();
+            break;
+
         default:
             break;
     }
