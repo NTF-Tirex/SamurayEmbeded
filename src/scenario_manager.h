@@ -13,13 +13,14 @@
 // -----------------------------------------------------
 // Scenario format
 // 0  - sourceAddress
-// 1  - triggerByte   (bits 7..5 sensorIndex, bits 4..0 triggerValue)
-// 2  - 17            targetMask[16] for addresses 0..127
-// 18 - reactionByte  (bits 7..4 reactionType, bits 3..0 actuatorIndex)
-// 19 - reactionValue
-// 20 - crc
+// 1  - sensorID
+// 2  - sensorValue
+// 3  - 18            targetMask[16] for addresses 0..127
+// 19 - reactionByte  (bits 7..4 reactionType, bits 3..0 actuatorIndex)
+// 20 - reactionValue
+// 21 - crc
 // -----------------------------------------------------
-#define SCENARIO_SIZE                     21
+#define SCENARIO_SIZE                     22
 #define SCENARIO_MAX_COUNT                40
 #define SCENARIO_TARGET_MASK_SIZE         16
 
@@ -36,7 +37,8 @@
 
 struct ScenarioRecord {
     uint8_t sourceAddress;
-    uint8_t triggerByte;
+    uint8_t sensorID;
+    uint8_t sensorValue;
     uint8_t targetMask[SCENARIO_TARGET_MASK_SIZE];
     uint8_t reactionByte;
     uint8_t reactionValue;
@@ -66,10 +68,6 @@ namespace ScenarioManager {
     bool isSlotActive(const ScenarioRecord &record);
     bool isRecordStructValid(const ScenarioRecord &record);
     bool isRecordCrcValid(const ScenarioRecord &record);
-
-    uint8_t makeTriggerByte(uint8_t sensorIndex, uint8_t triggerValue);
-    uint8_t getSensorIndex(uint8_t triggerByte);
-    uint8_t getTriggerValue(uint8_t triggerByte);
 
     uint8_t makeReactionByte(uint8_t reactionType, uint8_t actuatorIndex);
     uint8_t getReactionType(uint8_t reactionByte);

@@ -243,7 +243,7 @@ namespace ScenarioManager {
             return false;
         }
 
-        if (getSensorIndex(record.triggerByte) > 7) {
+        if (isSlotActive(record) && record.sensorID == 0) {
             return false;
         }
 
@@ -264,18 +264,6 @@ namespace ScenarioManager {
 
     bool isRecordCrcValid(const ScenarioRecord &record) {
         return calcRecordCrc(record) == record.crc;
-    }
-
-    uint8_t makeTriggerByte(uint8_t sensorIndex, uint8_t triggerValue) {
-        return (uint8_t)(((sensorIndex & 0x07) << 5) | (triggerValue & 0x1F));
-    }
-
-    uint8_t getSensorIndex(uint8_t triggerByte) {
-        return (triggerByte >> 5) & 0x07;
-    }
-
-    uint8_t getTriggerValue(uint8_t triggerByte) {
-        return triggerByte & 0x1F;
     }
 
     uint8_t makeReactionByte(uint8_t reactionType, uint8_t actuatorIndex) {
@@ -367,7 +355,8 @@ namespace ScenarioManager {
 
     void makeEmptyRecord(ScenarioRecord &record) {
         record.sourceAddress = SCENARIO_SOURCE_EMPTY;
-        record.triggerByte = 0;
+        record.sensorID = 0;
+        record.sensorValue = 0;
         clearTargetMask(record);
         record.reactionByte = 0;
         record.reactionValue = 0;
@@ -376,7 +365,8 @@ namespace ScenarioManager {
 
     void makeDisabledRecord(ScenarioRecord &record) {
         record.sourceAddress = SCENARIO_SOURCE_DISABLED;
-        record.triggerByte = 0;
+        record.sensorID = 0;
+        record.sensorValue = 0;
         clearTargetMask(record);
         record.reactionByte = 0;
         record.reactionValue = 0;

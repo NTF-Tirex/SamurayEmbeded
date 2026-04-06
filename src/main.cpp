@@ -106,6 +106,8 @@
 #define ACTION_CODE_SET_ACTUATOR_CONFIG     14
 #define ACTION_CODE_GET_ACTUATOR_CONFIG     15
 #define ACTION_CODE_CLEAR_ALL_SCENARIOS    16
+#define ACTION_CODE_SENSOR_STATE_CHANGED  17
+#define ACTION_CODE_SET_BRIGHTNESS       18
 
 // Адреса в EEPROM (только для сохраняемых данных)
 #define EEPROM_ADDRESS_SLAVE_ID             0
@@ -191,6 +193,8 @@
 #define SERIAL_NUMBER               1
 #define SLAVE_ID_DEFAULT            128
 #define MIN_BRIGHTNESS              20
+#define DEFAULT_STANDBY_BRIGHTNESS_PERCENT  30
+#define EEPROM_EMPTY_BYTE                0xFF
 #define ACTION_DATA_SIZE            32
 #define NAME_SIZE                   32
 
@@ -382,7 +386,9 @@ void loadIoConfigFromEEPROM();
 void updateConfiguredIoStates();
 void applyConfiguredActuatorStates();
 void processScenarioTriggers();
+void processRemoteSensorStateChange(uint8_t sensorID, uint8_t sensorValue);
 void executeLocalScenario(const ScenarioRecord &record);
+bool hasLocalSensorID(uint8_t sensorID);
 uint8_t readConfiguredSensorState(uint8_t index);
 bool isSensorConfigured(uint8_t index);
 bool isActuatorConfigured(uint8_t index);
@@ -414,6 +420,9 @@ void handleActionCode(int actionCode);
 bool isLeapYear(byte year);
 
 void setBright(int percent);
+byte readStoredBrightnessPercent();
+void writeStoredBrightnessPercent(byte value);
+void applyLightState();
 void Clear_buff();
 void tickTimer();
 
@@ -452,30 +461,12 @@ void setup() {
     ScenarioManager::begin();
     loadIoConfigFromEEPROM();
     updateConfiguredIoStates();
+    processScenarioTriggers();
     applyConfiguredActuatorStates();
+    applyLightState();
 }
 
 void loop() {
-    byte extModeState = 0;
-    byte extOnOffState = 0;
-    byte level = 30;
-
-    if (isExternalControl) {
-        extModeState = !EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT);
-        extOnOffState = EEPROM.read(EEPROM_ADDRESS_ONOFF);
-        level = EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE);
-    } else {
-        extModeState = digitalRead(MODE_TURN);
-        extOnOffState = digitalRead(ONOFF_TURN);
-    }
-
-    if (extModeState == 0) {
-        setBright(100);
-    } else {
-        setBright(level);
-    }
-    lightEnabled = (extOnOffState == 1);
-
     readPacketFromPort();
 
     if (actionPending) {
@@ -486,6 +477,7 @@ void loop() {
     updateConfiguredIoStates();
     processScenarioTriggers();
     applyConfiguredActuatorStates();
+    applyLightState();
 }
 
 // =====================================================
@@ -902,6 +894,10 @@ void setupEEPROM() {
         writeAndSetCoil(i, value);
     }
 
+    if (EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE) == EEPROM_EMPTY_BYTE || EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE) > 100) {
+        writeStoredBrightnessPercent(DEFAULT_STANDBY_BRIGHTNESS_PERCENT);
+    }
+
     for (uint8_t i = 0; i < (sizeof(actuatorPins) / sizeof(actuatorPins[0])); i++) {
         actuatorCoilForceOn[i] = false;
     }
@@ -986,6 +982,21 @@ void applyConfiguredActuatorStates() {
     }
 }
 
+bool hasLocalSensorID(uint8_t sensorID) {
+    if (sensorID == 0) {
+        return false;
+    }
+
+    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
+    for (uint8_t i = 0; i < sensorCount; i++) {
+        if (isSensorConfigured(i) && sensorIds[i] == sensorID) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
 void executeLocalScenario(const ScenarioRecord &record) {
     uint8_t reactionType = ScenarioManager::getReactionType(record.reactionByte);
     uint8_t actuatorIndex = ScenarioManager::getActuatorIndex(record.reactionByte);
@@ -994,11 +1005,28 @@ void executeLocalScenario(const ScenarioRecord &record) {
         case SCENARIO_REACTION_OUT:
             if (actuatorIndex < (sizeof(actuatorPins) / sizeof(actuatorPins[0])) && isActuatorConfigured(actuatorIndex)) {
                 actuatorStates[actuatorIndex] = (record.reactionValue != 0) ? 1 : 0;
+                if (!actuatorCoilForceOn[actuatorIndex]) {
+                    digitalWrite(actuatorPins[actuatorIndex], actuatorStates[actuatorIndex] ? HIGH : LOW);
+                }
             }
             break;
 
         case SCENARIO_REACTION_LUM:
-            setBright(record.reactionValue);
+            if (record.reactionValue == 0) {
+                EEPROM.write(EEPROM_ADDRESS_ONOFF, 0);
+            } else {
+                EEPROM.write(EEPROM_ADDRESS_ONOFF, 1);
+                if (record.reactionValue >= 100) {
+                    EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, 1);
+                    writeStoredBrightnessPercent(100);
+                } else {
+                    EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, 0);
+                    writeStoredBrightnessPercent(record.reactionValue);
+                }
+            }
+            isExternalControl = true;
+            countWithoutExternalControl = 0;
+            applyLightState();
             break;
 
         case SCENARIO_REACTION_MODE:
@@ -1023,9 +1051,13 @@ void processScenarioTriggers() {
             continue;
         }
 
-        if (sensorStates[sensorIndex] == prevSensorStates[sensorIndex]) {
+        uint8_t prevValue = prevSensorStates[sensorIndex];
+        uint8_t currValue = sensorStates[sensorIndex];
+        if (currValue == prevValue) {
             continue;
         }
+
+        uint8_t sensorID = sensorIds[sensorIndex];
 
         for (uint8_t scenarioIndex = 0; scenarioIndex < scenarioCount; scenarioIndex++) {
             ScenarioRecord record;
@@ -1041,13 +1073,17 @@ void processScenarioTriggers() {
             if (!ScenarioManager::isRecordCrcValid(record)) {
                 continue;
             }
-            if (record.sourceAddress != addr) {
+            if (record.sensorID != sensorID) {
                 continue;
             }
-            if (ScenarioManager::getSensorIndex(record.triggerByte) != sensorIndex) {
-                continue;
+
+            bool triggerMatched = false;
+            if (record.sensorValue == 1) {
+                triggerMatched = (prevValue == 0 && currValue == 1);
+            } else if (record.sensorValue == 2) {
+                triggerMatched = (prevValue == 1 && currValue == 0);
             }
-            if (ScenarioManager::getTriggerValue(record.triggerByte) != sensorStates[sensorIndex]) {
+            if (!triggerMatched) {
                 continue;
             }
             if (!ScenarioManager::hasTargetAddress(record, addr)) {
@@ -1056,6 +1092,51 @@ void processScenarioTriggers() {
 
             executeLocalScenario(record);
         }
+    }
+}
+
+void processRemoteSensorStateChange(uint8_t sensorID, uint8_t sensorValue) {
+    if (sensorID == 0) {
+        return;
+    }
+
+    if (hasLocalSensorID(sensorID)) {
+        return;
+    }
+
+    uint8_t scenarioCount = ScenarioManager::getScenarioCount();
+    for (uint8_t scenarioIndex = 0; scenarioIndex < scenarioCount; scenarioIndex++) {
+        ScenarioRecord record;
+        if (!ScenarioManager::readScenario(scenarioIndex, record)) {
+            continue;
+        }
+        if (!ScenarioManager::isSlotActive(record)) {
+            continue;
+        }
+        if (!ScenarioManager::isRecordStructValid(record)) {
+            continue;
+        }
+        if (!ScenarioManager::isRecordCrcValid(record)) {
+            continue;
+        }
+        if (record.sensorID != sensorID) {
+            continue;
+        }
+
+        bool triggerMatched = false;
+        if (record.sensorValue == 1) {
+            triggerMatched = (sensorValue == 1);
+        } else if (record.sensorValue == 2) {
+            triggerMatched = (sensorValue == 0);
+        }
+        if (!triggerMatched) {
+            continue;
+        }
+        if (!ScenarioManager::hasTargetAddress(record, addr)) {
+            continue;
+        }
+
+        executeLocalScenario(record);
     }
 }
 
@@ -1075,7 +1156,7 @@ byte readCoilFromEEPROM(int index) {
 
 int readHoldRegisterFromEEPROM(int index) {
     switch (holdRegisterList[index]) {
-        case HOLD_LEVEL_MODE:       return EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE);
+        case HOLD_LEVEL_MODE:       return readStoredBrightnessPercent();
         case HOLD_ACTION_CODE:      return 0; // Код действия не хранится
         case HOLD_ACTION_DATA_0:    return actionData[0];
         case HOLD_ACTION_DATA_1:    return actionData[1];
@@ -1229,25 +1310,29 @@ void writeAndSetCoil(int index, byte value) {
     switch (coilsList[index]) {
         case COIL_MODE_CURRENT:
             EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, value);
+            isExternalControl = true;
+            countWithoutExternalControl = 0;
+            applyLightState();
             break;
 
         case COIL_ONOFF:
             EEPROM.write(EEPROM_ADDRESS_ONOFF, value);
+            isExternalControl = true;
+            countWithoutExternalControl = 0;
+            applyLightState();
             break;
 
         case COIL_ACTUATOR_0:
             actuatorCoilForceOn[0] = (value != 0);
-            if (value) {
-                actuatorStates[0] = 1;
-            }
+            actuatorStates[0] = (value != 0) ? 1 : 0;
+            digitalWrite(actuatorPins[0], actuatorStates[0] ? HIGH : LOW);
             break;
 
         case COIL_ACTUATOR_1:
             if ((sizeof(actuatorPins) / sizeof(actuatorPins[0])) > 1) {
                 actuatorCoilForceOn[1] = (value != 0);
-                if (value) {
-                    actuatorStates[1] = 1;
-                }
+                actuatorStates[1] = (value != 0) ? 1 : 0;
+                digitalWrite(actuatorPins[1], actuatorStates[1] ? HIGH : LOW);
             }
             break;
     }
@@ -1256,7 +1341,12 @@ void writeAndSetCoil(int index, byte value) {
 void writeHoldRegister(int index, int value) {
     switch (holdRegisterList[index]) {
         case HOLD_LEVEL_MODE:
-            EEPROM.write(EEPROM_ADDRESS_LEVEL_MODE, value);
+            if (value < 0) value = 0;
+            if (value > 100) value = 100;
+            writeStoredBrightnessPercent((byte)value);
+            isExternalControl = true;
+            countWithoutExternalControl = 0;
+            applyLightState();
             break;
         case HOLD_ACTION_CODE:
             pendingActionCode = (uint16_t)value;
@@ -1497,6 +1587,23 @@ void handleActionCode(int actionCode) {
             ScenarioManager::clearAllScenarios();
             break;
 
+        case ACTION_CODE_SENSOR_STATE_CHANGED:
+            processRemoteSensorStateChange(actionData[0], actionData[1]);
+            break;
+
+        case ACTION_CODE_SET_BRIGHTNESS:
+            {
+                byte brightness = actionData[0];
+                if (brightness > 100) {
+                    brightness = 100;
+                }
+                writeStoredBrightnessPercent(brightness);
+                if (isExternalControl && EEPROM.read(EEPROM_ADDRESS_ONOFF) != 0 && EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT) == 0) {
+                    applyLightState();
+                }
+            }
+            break;
+
         default:
             break;
     }
@@ -1505,6 +1612,21 @@ void handleActionCode(int actionCode) {
 // =====================================================
 // Управление яркостью / ШИМ
 // =====================================================
+
+byte readStoredBrightnessPercent() {
+    byte value = EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE);
+    if (value == EEPROM_EMPTY_BYTE || value > 100) {
+        return DEFAULT_STANDBY_BRIGHTNESS_PERCENT;
+    }
+    return value;
+}
+
+void writeStoredBrightnessPercent(byte value) {
+    if (value > 100) {
+        value = 100;
+    }
+    EEPROM.write(EEPROM_ADDRESS_LEVEL_MODE, value);
+}
 
 void setBright(int percent) {
     if (percent < 0) percent = 0;
@@ -1517,11 +1639,52 @@ void setBright(int percent) {
     duty = (255 * percent) / 100;
 }
 
-ISR(TIMER2_COMPA_vect) {
-    static uint8_t counter = 0;
-    static uint32_t lightCounter = 0;
+void applyLightState() {
+    byte modeState = 0;
+    byte onOffState = 0;
 
-    lightBrightness = (counter < (duty / 2));
+    if (isExternalControl) {
+        modeState = EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT);
+        onOffState = EEPROM.read(EEPROM_ADDRESS_ONOFF);
+    } else {
+        modeState = digitalRead(MODE_TURN) ? 1 : 0;
+        onOffState = digitalRead(ONOFF_TURN) ? 1 : 0;
+    }
+
+    if (onOffState == 0) {
+        lightEnabled = false;
+        lightBrightness = false;
+        duty = 0;
+        digitalWrite(PWM_PIN, LOW);
+        return;
+    }
+
+    lightEnabled = true;
+
+    if (modeState == 1) {
+        setBright(100);
+    } else {
+        setBright(readStoredBrightnessPercent());
+    }
+}
+
+ISR(TIMER2_COMPA_vect) {
+    static volatile uint8_t counterBright = 0;
+    static volatile uint32_t counterLight = 0;
+
+    if (counterBright == 0) {
+        if (duty > 0) {
+            lightBrightness = true;
+        } else {
+            lightBrightness = false;
+        }
+    }
+
+    if (counterBright == duty) {
+        lightBrightness = false;
+    }
+
+    counterBright++;
 
     if (lightEnabled && lightBrightness) {
         digitalWrite(PWM_PIN, HIGH);
@@ -1529,18 +1692,15 @@ ISR(TIMER2_COMPA_vect) {
         digitalWrite(PWM_PIN, LOW);
     }
 
-    counter++;
-    lightCounter++;
-
-    if (lightCounter >= 10000UL) {
-        lightCounter = 0;
+    counterLight++;
+    if (counterLight >= 10000UL) {
+        counterLight = 0;
         tickTimer();
     }
 }
 
 void tickTimer() {
-    countWithoutExternalControl++;
-    isExternalControl = (countWithoutExternalControl < timeoutExternalControl);
+    // Внешнее управление не сбрасываем по таймауту.
     
     // Обновление времени
     currentSecond++;
