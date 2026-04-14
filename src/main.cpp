@@ -3,22 +3,8 @@
 #include <microDS18B20/microDS18B20.h>
 #include <EEPROM.h>
 #include "scenario_manager.h"
-
-/* Определение выводов */
-#define DS18B20_DATA        2   // датчик температуры (1 wire)
-#define ON_OFF_RELAY_1      3   // управление оптореле №1
-#define ON_OFF_RELAY_2      4   // управление оптореле №2
-#define MODE_TURN           5   // контроль тревожного выхода
-#define ONOFF_TURN          6   // контроль датчика холла
-#define PWM_PIN             7   // вывод ШИМ
-
-#define ADDR_BIT_6          11  // адрес RS485 Bit6
-#define ADDR_BIT_5          10  // адрес RS485 Bit5
-#define ADDR_BIT_4          12  // адрес RS485 Bit4
-#define ADDR_BIT_3          9   // адрес RS485 Bit3
-#define ADDR_BIT_2          17  // адрес RS485 Bit2
-#define ADDR_BIT_1          8   // адрес RS485 Bit1
-#define ADDR_BIT_0          16  // адрес RS485 Bit0
+#include "device_config.h"
+#include "device_light_controller.h"
 
 //----------------------------------------------
 // Регистры Modbus
@@ -53,6 +39,7 @@
 #define INPUT_COUNT_SENSOR          9
 #define INPUT_COUNT_ACTUATORS       10
 #define INPUT_COUNT_SCENARIOS_ACTIVE  11
+#define INPUT_SCENARIOS_CRC         12
 
 // Holding Registers
 #define HOLD_LEVEL_MODE             0
@@ -108,6 +95,7 @@
 #define ACTION_CODE_CLEAR_ALL_SCENARIOS    16
 #define ACTION_CODE_SENSOR_STATE_CHANGED  17
 #define ACTION_CODE_SET_BRIGHTNESS       18
+#define ACTION_CODE_GET_CURRENT_BRIGHTNESS 19
 
 // Адреса в EEPROM (только для сохраняемых данных)
 #define EEPROM_ADDRESS_SLAVE_ID             0
@@ -200,34 +188,6 @@
 
 const char base[16] = {'0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F'};
 
-const int coilsList[] = {
-    COIL_MODE_CURRENT,
-    COIL_ONOFF,
-    COIL_ACTUATOR_0,
-    COIL_ACTUATOR_1
-};
-
-const uint8_t sensorPins[] = {
-    MODE_TURN,
-    ONOFF_TURN
-};
-
-const uint8_t actuatorPins[] = {
-    ON_OFF_RELAY_1,
-    ON_OFF_RELAY_2
-};
-
-const int inputDiscreteList[] = {
-    INPUT_DISCRETE_0,
-    INPUT_DISCRETE_1,
-    INPUT_DISCRETE_2,
-    INPUT_DISCRETE_3,
-    INPUT_DISCRETE_4,
-    INPUT_DISCRETE_5,
-    INPUT_DISCRETE_6,
-    INPUT_DISCRETE_7
-};
-
 const int inputStateList[] = {
     INPUT_DEVICE_TYPE_ID,
     INPUT_SENSOR_TEMPERATURE,
@@ -240,7 +200,8 @@ const int inputStateList[] = {
     INPUT_COUNT_HOLD,
     INPUT_COUNT_SENSOR,
     INPUT_COUNT_ACTUATORS,
-    INPUT_COUNT_SCENARIOS_ACTIVE
+    INPUT_COUNT_SCENARIOS_ACTIVE,
+    INPUT_SCENARIOS_CRC
 };
 
 const int holdRegisterList[] = {
@@ -348,6 +309,9 @@ char RX = 0;
 int count_rx = 0;
 char flag_rx = 0;
 
+int modbusAdu[LEN] = {0};
+int modbusAnswer[255] = {0};
+
 byte actionData[ACTION_DATA_SIZE] = {0};
 volatile bool actionPending = false;
 uint16_t pendingActionCode = 0;
@@ -358,10 +322,6 @@ byte currentYear = 0;
 byte currentHour = 0;
 byte currentMinute = 0;
 byte currentSecond = 0;
-
-int duty = 0;
-bool lightEnabled = false;
-bool lightBrightness = false;
 
 bool isExternalControl = false;
 int countWithoutExternalControl = 0;
@@ -377,10 +337,36 @@ uint8_t scenarioBlinkMode = 0;
 uint8_t scenarioBlinkTime = 0;
 
 MicroDS18B20<DS18B20_DATA> sensor;
+ActiveLightController lightController;
+
+uint8_t readStoredBrightnessPercent() {
+    return lightController.readStoredBrightnessPercent();
+}
+
+void writeStoredBrightnessPercent(uint8_t value) {
+    lightController.writeStoredBrightnessPercent(value);
+}
+
+void applyBrightnessValue(uint8_t value) {
+    lightController.applyBrightnessValue(value);
+}
+
+uint8_t getCurrentBrightnessPercent() {
+    uint8_t modeState = EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT) ? 1 : 0;
+    uint8_t onOffState = EEPROM.read(EEPROM_ADDRESS_ONOFF) ? 1 : 0;
+    if (onOffState == 0) {
+        return 0;
+    }
+    if (modeState == 1) {
+        return 100;
+    }
+    return readStoredBrightnessPercent();
+}
 
 /* Прототипы функций */
 void getAddress();
 void setupEEPROM();
+void setupPinsFromConfig();
 void clearEEPROM();
 void loadIoConfigFromEEPROM();
 void updateConfiguredIoStates();
@@ -389,10 +375,15 @@ void processScenarioTriggers();
 void processRemoteSensorStateChange(uint8_t sensorID, uint8_t sensorValue);
 void executeLocalScenario(const ScenarioRecord &record);
 bool hasLocalSensorID(uint8_t sensorID);
+uint8_t readPhysicalSensorState(uint8_t index);
 uint8_t readConfiguredSensorState(uint8_t index);
 bool isSensorConfigured(uint8_t index);
 bool isActuatorConfigured(uint8_t index);
 void clearActionData();
+
+uint8_t readStoredBrightnessPercent();
+void writeStoredBrightnessPercent(uint8_t value);
+void applyBrightnessValue(uint8_t value);
 
 void readPacketFromPort();
 void sendPacketToPort(int *data, int len);
@@ -419,10 +410,6 @@ void writeHoldRegister(int index, int value);
 void handleActionCode(int actionCode);
 bool isLeapYear(byte year);
 
-void setBright(int percent);
-byte readStoredBrightnessPercent();
-void writeStoredBrightnessPercent(byte value);
-void applyLightState();
 void Clear_buff();
 void tickTimer();
 
@@ -436,25 +423,20 @@ int lrc8(int *data, unsigned int len);
 // Основные функции
 // =====================================================
 
+
+void setupPinsFromConfig() {
+    for (size_t i = 0; i < PIN_INIT_COUNT; i++) {
+        pinMode(pinInitList[i].pin, pinInitList[i].mode);
+        if (pinInitList[i].setValue) {
+            digitalWrite(pinInitList[i].pin, pinInitList[i].value);
+        }
+    }
+}
+
 void setup() {
     Serial.begin(9600);
 
-    pinMode(ON_OFF_RELAY_1, OUTPUT);
-    pinMode(ON_OFF_RELAY_2, OUTPUT);
-    pinMode(MODE_TURN, INPUT);
-    pinMode(ONOFF_TURN, INPUT);
-    pinMode(PWM_PIN, OUTPUT);
-
-    pinMode(ADDR_BIT_6, INPUT);
-    pinMode(ADDR_BIT_5, INPUT);
-    pinMode(ADDR_BIT_4, INPUT);
-    pinMode(ADDR_BIT_3, INPUT);
-    pinMode(ADDR_BIT_2, INPUT);
-    pinMode(ADDR_BIT_1, INPUT);
-    pinMode(ADDR_BIT_0, INPUT);
-
-    Timer2.setFrequency(10000UL);
-    Timer2.enableISR();
+    setupPinsFromConfig();
 
     getAddress();
     setupEEPROM();
@@ -463,7 +445,8 @@ void setup() {
     updateConfiguredIoStates();
     processScenarioTriggers();
     applyConfiguredActuatorStates();
-    applyLightState();
+    lightController.begin();
+    lightController.applyLightState();
 }
 
 void loop() {
@@ -477,7 +460,7 @@ void loop() {
     updateConfiguredIoStates();
     processScenarioTriggers();
     applyConfiguredActuatorStates();
-    applyLightState();
+    lightController.applyLightState();
 }
 
 // =====================================================
@@ -497,11 +480,10 @@ void readPacketFromPort() {
                 --count_rx;
                 buffSerial[count_rx] = '\0';
                 
-                int adu[LEN];
                 int lenght = 0;
-                hexStringToIntArray(buffSerial, adu, &lenght);
+                hexStringToIntArray(buffSerial, modbusAdu, &lenght);
                 
-                verifyAduData(adu, lenght);
+                verifyAduData(modbusAdu, lenght);
                 Clear_buff();
             } 
             else {
@@ -514,26 +496,20 @@ void readPacketFromPort() {
 }
 
 void sendPacketToPort(int *data, int len) {
-    if (data[0] != 0) {
-        char packet[256];
-        int j = 0;
-        
-        packet[j++] = ':';
-        
-        for (int i = 0; i < len; i++) {
-            char hex[2];
-            getHexFromHDec(data[i], hex);
-            packet[j++] = hex[0];
-            packet[j++] = hex[1];
-        }
-        
-        packet[j++] = '\r';
-        packet[j++] = '\n';
-        packet[j] = '\0';
-        
-        Serial.print(packet);
+    if (data[0] == 0) {
+        return;
     }
+
+    Serial.write(':');
+    for (int i = 0; i < len; i++) {
+        char hex[2];
+        getHexFromHDec(data[i], hex);
+        Serial.write(hex[0]);
+        Serial.write(hex[1]);
+    }
+    Serial.print("\r\n");
 }
+
 
 void verifyAduData(int *data, int len) {
     if (len < 4) return;
@@ -941,16 +917,20 @@ bool isActuatorConfigured(uint8_t index) {
     return index < (sizeof(actuatorPins) / sizeof(actuatorPins[0])) && actuatorIds[index] != 0;
 }
 
-uint8_t readConfiguredSensorState(uint8_t index) {
-    if (index >= (sizeof(sensorPins) / sizeof(sensorPins[0]))) {
+uint8_t readPhysicalSensorState(uint8_t index) {
+    if (index >= SENSOR_PINS_COUNT) {
         return 0;
     }
 
-    uint8_t pin = sensorPins[index];
-    if (pin == MODE_TURN) {
-        return !digitalRead(pin);
+    uint8_t value = digitalRead(sensorPins[index]) ? 1 : 0;
+    if (sensorInvert[index]) {
+        value = value ? 0 : 1;
     }
-    return digitalRead(pin);
+    return value;
+}
+
+uint8_t readConfiguredSensorState(uint8_t index) {
+    return readPhysicalSensorState(index);
 }
 
 void updateConfiguredIoStates() {
@@ -1014,19 +994,12 @@ void executeLocalScenario(const ScenarioRecord &record) {
         case SCENARIO_REACTION_LUM:
             if (record.reactionValue == 0) {
                 EEPROM.write(EEPROM_ADDRESS_ONOFF, 0);
+                lightController.applyLightState();
             } else {
+                EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, 0);
                 EEPROM.write(EEPROM_ADDRESS_ONOFF, 1);
-                if (record.reactionValue >= 100) {
-                    EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, 1);
-                    writeStoredBrightnessPercent(100);
-                } else {
-                    EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, 0);
-                    writeStoredBrightnessPercent(record.reactionValue);
-                }
+                applyBrightnessValue(record.reactionValue);
             }
-            isExternalControl = true;
-            countWithoutExternalControl = 0;
-            applyLightState();
             break;
 
         case SCENARIO_REACTION_MODE:
@@ -1297,6 +1270,9 @@ int readInputState(int index) {
                 return activeCount;
             }
 
+        case INPUT_SCENARIOS_CRC:
+            return ScenarioManager::calcStoredScenariosCrc();
+
         default:
             return 0;
     }
@@ -1312,14 +1288,14 @@ void writeAndSetCoil(int index, byte value) {
             EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, value);
             isExternalControl = true;
             countWithoutExternalControl = 0;
-            applyLightState();
+            lightController.applyLightState();
             break;
 
         case COIL_ONOFF:
             EEPROM.write(EEPROM_ADDRESS_ONOFF, value);
             isExternalControl = true;
             countWithoutExternalControl = 0;
-            applyLightState();
+            lightController.applyLightState();
             break;
 
         case COIL_ACTUATOR_0:
@@ -1343,10 +1319,7 @@ void writeHoldRegister(int index, int value) {
         case HOLD_LEVEL_MODE:
             if (value < 0) value = 0;
             if (value > 100) value = 100;
-            writeStoredBrightnessPercent((byte)value);
-            isExternalControl = true;
-            countWithoutExternalControl = 0;
-            applyLightState();
+            applyBrightnessValue((byte)value);
             break;
         case HOLD_ACTION_CODE:
             pendingActionCode = (uint16_t)value;
@@ -1592,16 +1565,12 @@ void handleActionCode(int actionCode) {
             break;
 
         case ACTION_CODE_SET_BRIGHTNESS:
-            {
-                byte brightness = actionData[0];
-                if (brightness > 100) {
-                    brightness = 100;
-                }
-                writeStoredBrightnessPercent(brightness);
-                if (isExternalControl && EEPROM.read(EEPROM_ADDRESS_ONOFF) != 0 && EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT) == 0) {
-                    applyLightState();
-                }
-            }
+            lightController.applyBrightnessValue(actionData[0]);
+            break;
+
+        case ACTION_CODE_GET_CURRENT_BRIGHTNESS:
+            memset(actionData, 0, ACTION_DATA_SIZE);
+            actionData[0] = getCurrentBrightnessPercent();
             break;
 
         default:
@@ -1609,94 +1578,8 @@ void handleActionCode(int actionCode) {
     }
 }
 
-// =====================================================
-// Управление яркостью / ШИМ
-// =====================================================
-
-byte readStoredBrightnessPercent() {
-    byte value = EEPROM.read(EEPROM_ADDRESS_LEVEL_MODE);
-    if (value == EEPROM_EMPTY_BYTE || value > 100) {
-        return DEFAULT_STANDBY_BRIGHTNESS_PERCENT;
-    }
-    return value;
-}
-
-void writeStoredBrightnessPercent(byte value) {
-    if (value > 100) {
-        value = 100;
-    }
-    EEPROM.write(EEPROM_ADDRESS_LEVEL_MODE, value);
-}
-
-void setBright(int percent) {
-    if (percent < 0) percent = 0;
-    if (percent > 100) percent = 100;
-
-    if (percent > 0) {
-        percent = MIN_BRIGHTNESS + (100 - MIN_BRIGHTNESS) * percent / 100;
-    }
-
-    duty = (255 * percent) / 100;
-}
-
-void applyLightState() {
-    byte modeState = 0;
-    byte onOffState = 0;
-
-    if (isExternalControl) {
-        modeState = EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT);
-        onOffState = EEPROM.read(EEPROM_ADDRESS_ONOFF);
-    } else {
-        modeState = digitalRead(MODE_TURN) ? 1 : 0;
-        onOffState = digitalRead(ONOFF_TURN) ? 1 : 0;
-    }
-
-    if (onOffState == 0) {
-        lightEnabled = false;
-        lightBrightness = false;
-        duty = 0;
-        digitalWrite(PWM_PIN, LOW);
-        return;
-    }
-
-    lightEnabled = true;
-
-    if (modeState == 1) {
-        setBright(100);
-    } else {
-        setBright(readStoredBrightnessPercent());
-    }
-}
-
 ISR(TIMER2_COMPA_vect) {
-    static volatile uint8_t counterBright = 0;
-    static volatile uint32_t counterLight = 0;
-
-    if (counterBright == 0) {
-        if (duty > 0) {
-            lightBrightness = true;
-        } else {
-            lightBrightness = false;
-        }
-    }
-
-    if (counterBright == duty) {
-        lightBrightness = false;
-    }
-
-    counterBright++;
-
-    if (lightEnabled && lightBrightness) {
-        digitalWrite(PWM_PIN, HIGH);
-    } else {
-        digitalWrite(PWM_PIN, LOW);
-    }
-
-    counterLight++;
-    if (counterLight >= 10000UL) {
-        counterLight = 0;
-        tickTimer();
-    }
+    lightController.onTimerTick();
 }
 
 void tickTimer() {

@@ -331,9 +331,16 @@ namespace ScenarioManager {
 
         uint8_t crc = 0;
         for (uint8_t index = 0; index < count; index++) {
-            uint16_t eepromAddress = getScenarioEepromAddress(index);
-            for (uint8_t i = 0; i < SCENARIO_SIZE; i++) {
-                crc = crc8_update(crc, EEPROM.read(eepromAddress + i));
+            ScenarioRecord record;
+            if (!readScenario(index, record)) {
+                continue;
+            }
+
+            const uint8_t *bytes = recordBytes(record);
+            // В общий CRC НЕ включаем байт crc отдельного сценария.
+            // Иначе для валидных записей общий CRC слишком часто получается 0.
+            for (uint8_t i = 0; i < (SCENARIO_SIZE - 1); i++) {
+                crc = crc8_update(crc, bytes[i]);
             }
         }
         return crc;
