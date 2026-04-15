@@ -96,6 +96,7 @@
 #define ACTION_CODE_SENSOR_STATE_CHANGED  17
 #define ACTION_CODE_SET_BRIGHTNESS       18
 #define ACTION_CODE_GET_CURRENT_BRIGHTNESS 19
+#define ACTION_CODE_GET_UI_SNAPSHOT      20
 
 // Адреса в EEPROM (только для сохраняемых данных)
 #define EEPROM_ADDRESS_SLAVE_ID             0
@@ -380,6 +381,7 @@ uint8_t readConfiguredSensorState(uint8_t index);
 bool isSensorConfigured(uint8_t index);
 bool isActuatorConfigured(uint8_t index);
 void clearActionData();
+void fillUiSnapshotActionData();
 
 uint8_t readStoredBrightnessPercent();
 void writeStoredBrightnessPercent(uint8_t value);
@@ -895,6 +897,91 @@ void clearActionData() {
         actionData[i] = 0;
     }
 }
+
+void fillUiSnapshotActionData() {
+    clearActionData();
+
+    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
+    const uint8_t actuatorCount = sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+    const uint8_t totalDiscreteCount = (uint8_t)(sensorCount + actuatorCount + sensorCount + actuatorCount);
+    const uint8_t discreteBytesCount = (uint8_t)((totalDiscreteCount + 7) / 8);
+
+    // Формат actionData для быстрого UI-опроса:
+    // [0] currentBrightness
+    // [1] levelMode
+    // [2] flags: bit0=OnOff, bit1=ModeCurrent
+    // [3] temperature
+    // [4] scenariosActive
+    // [5] scenariosCRC
+    // [6] sensorCount
+    // [7] actuatorCount
+    // [8..] sensor IDs, actuator IDs, packed discrete bytes
+
+    actionData[0] = getCurrentBrightnessPercent();
+    actionData[1] = readStoredBrightnessPercent();
+
+    uint8_t flags = 0;
+    if (EEPROM.read(EEPROM_ADDRESS_ONOFF) != 0) {
+        flags |= 0x01;
+    }
+    if (EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT) != 0) {
+        flags |= 0x02;
+    }
+    actionData[2] = flags;
+
+    sensor.requestTemp();
+    int16_t currentTemp = (int16_t)sensor.getTemp();
+    if (currentTemp < -128) currentTemp = -128;
+    if (currentTemp > 127) currentTemp = 127;
+    actionData[3] = (uint8_t)((int8_t)currentTemp);
+
+    uint8_t activeScenarios = 0;
+    uint8_t totalScenarioCount = ScenarioManager::getScenarioCount();
+    for (uint8_t i = 0; i < totalScenarioCount; i++) {
+        ScenarioRecord record;
+        if (!ScenarioManager::readScenario(i, record)) {
+            continue;
+        }
+        if (!ScenarioManager::isSlotActive(record)) {
+            continue;
+        }
+        if (!ScenarioManager::isRecordStructValid(record)) {
+            continue;
+        }
+        if (!ScenarioManager::isRecordCrcValid(record)) {
+            continue;
+        }
+        activeScenarios++;
+    }
+
+    actionData[4] = activeScenarios;
+    actionData[5] = ScenarioManager::calcStoredScenariosCrc();
+    actionData[6] = sensorCount;
+    actionData[7] = actuatorCount;
+
+    uint8_t pos = 8;
+    for (uint8_t i = 0; i < sensorCount && pos < ACTION_DATA_SIZE; i++) {
+        actionData[pos++] = sensorIds[i];
+    }
+    for (uint8_t i = 0; i < actuatorCount && pos < ACTION_DATA_SIZE; i++) {
+        actionData[pos++] = actuatorIds[i];
+    }
+
+    for (uint8_t i = 0; i < discreteBytesCount && pos < ACTION_DATA_SIZE; i++) {
+        uint8_t packed = 0;
+        for (uint8_t bit = 0; bit < 8; bit++) {
+            uint8_t discreteIndex = (uint8_t)(i * 8 + bit);
+            if (discreteIndex >= totalDiscreteCount) {
+                break;
+            }
+            if (readDiscreteInput(discreteIndex)) {
+                packed |= (1 << bit);
+            }
+        }
+        actionData[pos++] = packed;
+    }
+}
+
 
 void loadIoConfigFromEEPROM() {
     const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
@@ -1571,6 +1658,10 @@ void handleActionCode(int actionCode) {
         case ACTION_CODE_GET_CURRENT_BRIGHTNESS:
             memset(actionData, 0, ACTION_DATA_SIZE);
             actionData[0] = getCurrentBrightnessPercent();
+            break;
+
+        case ACTION_CODE_GET_UI_SNAPSHOT:
+            fillUiSnapshotActionData();
             break;
 
         default:
