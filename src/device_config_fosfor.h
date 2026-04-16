@@ -33,6 +33,7 @@
 #define INPUT_DISCRETE_7    7
 
 constexpr bool DEVICE_HAS_LOCAL_LIGHT_INPUTS = true;
+constexpr bool DEVICE_ALLOW_SERVER_IO_CONFIG = false;
 constexpr uint8_t SENSOR_MODE_INDEX = 0;
 constexpr uint8_t SENSOR_ONOFF_INDEX = 1;
 

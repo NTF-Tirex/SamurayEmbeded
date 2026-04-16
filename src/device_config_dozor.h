@@ -35,6 +35,7 @@
 // Для Dozor управление светом теперь идет только по coil через EEPROM,
 // локальные входы MODE/ONOFF не используются.
 constexpr bool DEVICE_HAS_LOCAL_LIGHT_INPUTS = false;
+constexpr bool DEVICE_ALLOW_SERVER_IO_CONFIG = true;
 constexpr uint8_t SENSOR_MODE_INDEX = 0;
 constexpr uint8_t SENSOR_ONOFF_INDEX = 1;
 

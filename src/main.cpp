@@ -96,7 +96,6 @@
 #define ACTION_CODE_SENSOR_STATE_CHANGED  17
 #define ACTION_CODE_SET_BRIGHTNESS       18
 #define ACTION_CODE_GET_CURRENT_BRIGHTNESS 19
-#define ACTION_CODE_GET_UI_SNAPSHOT      20
 
 // Адреса в EEPROM (только для сохраняемых данных)
 #define EEPROM_ADDRESS_SLAVE_ID             0
@@ -176,7 +175,13 @@
 
 /* Настройки */
 #define LEN                         240
+#if defined(DEVICE_CONFIG_FOSFOR)
+#define DEVICE_TYPE_ID              4
+#elif defined(DEVICE_CONFIG_DOZOR)
 #define DEVICE_TYPE_ID              3
+#else
+#define DEVICE_TYPE_ID              0
+#endif
 #define FIRMWARE_HIGH               1
 #define FIRMWARE_LOW                0
 #define SERIAL_NUMBER               1
@@ -340,6 +345,18 @@ uint8_t scenarioBlinkTime = 0;
 MicroDS18B20<DS18B20_DATA> sensor;
 ActiveLightController lightController;
 
+uint8_t getReportedSensorCount() {
+    return DEVICE_ALLOW_SERVER_IO_CONFIG ? (uint8_t)(sizeof(sensorPins) / sizeof(sensorPins[0])) : 0;
+}
+
+uint8_t getReportedActuatorCount() {
+    return DEVICE_ALLOW_SERVER_IO_CONFIG ? (uint8_t)(sizeof(actuatorPins) / sizeof(actuatorPins[0])) : 0;
+}
+
+bool allowServerIoConfig() {
+    return DEVICE_ALLOW_SERVER_IO_CONFIG;
+}
+
 uint8_t readStoredBrightnessPercent() {
     return lightController.readStoredBrightnessPercent();
 }
@@ -381,7 +398,6 @@ uint8_t readConfiguredSensorState(uint8_t index);
 bool isSensorConfigured(uint8_t index);
 bool isActuatorConfigured(uint8_t index);
 void clearActionData();
-void fillUiSnapshotActionData();
 
 uint8_t readStoredBrightnessPercent();
 void writeStoredBrightnessPercent(uint8_t value);
@@ -449,6 +465,19 @@ void setup() {
     applyConfiguredActuatorStates();
     lightController.begin();
     lightController.applyLightState();
+    Serial.println(addr);
+    int a1 = EEPROM.read(EEPROM_ADDRESS_MAC_1);
+    Serial.println(a1);
+    a1 = EEPROM.read(EEPROM_ADDRESS_MAC_2);
+    Serial.println(a1);
+    a1 = EEPROM.read(EEPROM_ADDRESS_MAC_3);
+    Serial.println(a1);
+    a1 = EEPROM.read(EEPROM_ADDRESS_MAC_4);
+    Serial.println(a1);
+    a1 = EEPROM.read(EEPROM_ADDRESS_MAC_5);
+    Serial.println(a1);
+    a1 = EEPROM.read(EEPROM_ADDRESS_MAC_6);
+    Serial.println(a1);
 }
 
 void loop() {
@@ -522,9 +551,9 @@ void verifyAduData(int *data, int len) {
         return; // неверная контрольная сумма
     }
 
-    if (data[0] != addr && data[0] != 0) {
-        return; // не нам
-    }
+    // if (data[0] != addr && data[0] != 0) {
+    //     return; // не нам
+    // }
 
     parseFunction(data);
 }
@@ -863,6 +892,7 @@ void getAddress() {
     else {
         addr = savedId;
     }
+    addr = 10;
 }
 
 void setupEEPROM() {
@@ -897,91 +927,6 @@ void clearActionData() {
         actionData[i] = 0;
     }
 }
-
-void fillUiSnapshotActionData() {
-    clearActionData();
-
-    const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
-    const uint8_t actuatorCount = sizeof(actuatorPins) / sizeof(actuatorPins[0]);
-    const uint8_t totalDiscreteCount = (uint8_t)(sensorCount + actuatorCount + sensorCount + actuatorCount);
-    const uint8_t discreteBytesCount = (uint8_t)((totalDiscreteCount + 7) / 8);
-
-    // Формат actionData для быстрого UI-опроса:
-    // [0] currentBrightness
-    // [1] levelMode
-    // [2] flags: bit0=OnOff, bit1=ModeCurrent
-    // [3] temperature
-    // [4] scenariosActive
-    // [5] scenariosCRC
-    // [6] sensorCount
-    // [7] actuatorCount
-    // [8..] sensor IDs, actuator IDs, packed discrete bytes
-
-    actionData[0] = getCurrentBrightnessPercent();
-    actionData[1] = readStoredBrightnessPercent();
-
-    uint8_t flags = 0;
-    if (EEPROM.read(EEPROM_ADDRESS_ONOFF) != 0) {
-        flags |= 0x01;
-    }
-    if (EEPROM.read(EEPROM_ADDRESS_MODE_CURRENT) != 0) {
-        flags |= 0x02;
-    }
-    actionData[2] = flags;
-
-    sensor.requestTemp();
-    int16_t currentTemp = (int16_t)sensor.getTemp();
-    if (currentTemp < -128) currentTemp = -128;
-    if (currentTemp > 127) currentTemp = 127;
-    actionData[3] = (uint8_t)((int8_t)currentTemp);
-
-    uint8_t activeScenarios = 0;
-    uint8_t totalScenarioCount = ScenarioManager::getScenarioCount();
-    for (uint8_t i = 0; i < totalScenarioCount; i++) {
-        ScenarioRecord record;
-        if (!ScenarioManager::readScenario(i, record)) {
-            continue;
-        }
-        if (!ScenarioManager::isSlotActive(record)) {
-            continue;
-        }
-        if (!ScenarioManager::isRecordStructValid(record)) {
-            continue;
-        }
-        if (!ScenarioManager::isRecordCrcValid(record)) {
-            continue;
-        }
-        activeScenarios++;
-    }
-
-    actionData[4] = activeScenarios;
-    actionData[5] = ScenarioManager::calcStoredScenariosCrc();
-    actionData[6] = sensorCount;
-    actionData[7] = actuatorCount;
-
-    uint8_t pos = 8;
-    for (uint8_t i = 0; i < sensorCount && pos < ACTION_DATA_SIZE; i++) {
-        actionData[pos++] = sensorIds[i];
-    }
-    for (uint8_t i = 0; i < actuatorCount && pos < ACTION_DATA_SIZE; i++) {
-        actionData[pos++] = actuatorIds[i];
-    }
-
-    for (uint8_t i = 0; i < discreteBytesCount && pos < ACTION_DATA_SIZE; i++) {
-        uint8_t packed = 0;
-        for (uint8_t bit = 0; bit < 8; bit++) {
-            uint8_t discreteIndex = (uint8_t)(i * 8 + bit);
-            if (discreteIndex >= totalDiscreteCount) {
-                break;
-            }
-            if (readDiscreteInput(discreteIndex)) {
-                packed |= (1 << bit);
-            }
-        }
-        actionData[pos++] = packed;
-    }
-}
-
 
 void loadIoConfigFromEEPROM() {
     const uint8_t sensorCount = sizeof(sensorPins) / sizeof(sensorPins[0]);
@@ -1090,7 +1035,8 @@ void executeLocalScenario(const ScenarioRecord &record) {
             break;
 
         case SCENARIO_REACTION_MODE:
-            scenarioBlinkMode = record.reactionValue;
+            EEPROM.write(EEPROM_ADDRESS_MODE_CURRENT, (record.reactionValue != 0) ? 1 : 0);
+            lightController.applyLightState();
             break;
 
         case SCENARIO_REACTION_TIME:
@@ -1329,10 +1275,10 @@ int readInputState(int index) {
             return sizeof(holdRegisterList) / sizeof(holdRegisterList[0]);
 
         case INPUT_COUNT_SENSOR:
-            return sizeof(sensorPins) / sizeof(sensorPins[0]);
+            return getReportedSensorCount();
 
         case INPUT_COUNT_ACTUATORS:
-            return sizeof(actuatorPins) / sizeof(actuatorPins[0]);
+            return getReportedActuatorCount();
 
         case INPUT_COUNT_SCENARIOS_ACTIVE:
             {
@@ -1610,6 +1556,9 @@ void handleActionCode(int actionCode) {
             break;
 
         case ACTION_CODE_SET_SENSOR_CONFIG:
+            if (!allowServerIoConfig()) {
+                break;
+            }
             for (uint8_t i = 0; i < (sizeof(sensorPins) / sizeof(sensorPins[0])); i++) {
                 sensorIds[i] = actionData[i];
                 EEPROM.write(EEPROM_ADDRESS_SENSOR_ID_0 + i, sensorIds[i]);
@@ -1619,12 +1568,18 @@ void handleActionCode(int actionCode) {
 
         case ACTION_CODE_GET_SENSOR_CONFIG:
             clearActionData();
+            if (!allowServerIoConfig()) {
+                break;
+            }
             for (uint8_t i = 0; i < (sizeof(sensorPins) / sizeof(sensorPins[0])); i++) {
                 actionData[i] = sensorIds[i];
             }
             break;
 
         case ACTION_CODE_SET_ACTUATOR_CONFIG:
+            if (!allowServerIoConfig()) {
+                break;
+            }
             for (uint8_t i = 0; i < (sizeof(actuatorPins) / sizeof(actuatorPins[0])); i++) {
                 actuatorIds[i] = actionData[i];
                 EEPROM.write(EEPROM_ADDRESS_ACTUATOR_ID_0 + i, actuatorIds[i]);
@@ -1638,6 +1593,9 @@ void handleActionCode(int actionCode) {
 
         case ACTION_CODE_GET_ACTUATOR_CONFIG:
             clearActionData();
+            if (!allowServerIoConfig()) {
+                break;
+            }
             for (uint8_t i = 0; i < (sizeof(actuatorPins) / sizeof(actuatorPins[0])); i++) {
                 actionData[i] = actuatorIds[i];
             }
@@ -1658,10 +1616,6 @@ void handleActionCode(int actionCode) {
         case ACTION_CODE_GET_CURRENT_BRIGHTNESS:
             memset(actionData, 0, ACTION_DATA_SIZE);
             actionData[0] = getCurrentBrightnessPercent();
-            break;
-
-        case ACTION_CODE_GET_UI_SNAPSHOT:
-            fillUiSnapshotActionData();
             break;
 
         default:
